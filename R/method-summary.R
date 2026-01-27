@@ -1,0 +1,258 @@
+#' @rdname INLAvaan-class
+#' @param object An object of class [INLAvaan].
+#' @export
+setMethod("coef", "INLAvaan", function(object) {
+  class(object) <- "lavaan"
+  callNextMethod()
+})
+
+#' @exportS3Method summary inlavaan_internal
+summary.inlavaan_internal <- function(object, ...) {
+  structure(
+    list(summary = object$summary),
+    class = "summary.inlavaan_internal"
+  )
+}
+
+#' @exportS3Method print summary.inlavaan_internal
+print.summary.inlavaan_internal <- function(x, digits = 3, ...) {
+  summ <- x$summary
+  which_numeric <- sapply(summ, is.numeric)
+  summ[, which_numeric] <- round(summ[, which_numeric], digits)
+  print(summ)
+  invisible(x)
+}
+
+summary_inlavaan <- function(
+  object,
+  header = TRUE,
+  fit.measures = TRUE,
+  estimates = TRUE,
+  standardized = FALSE,
+  rsquare = FALSE,
+  postmedian = FALSE,
+  postmode = FALSE,
+  priors = TRUE,
+  nd = 3L,
+  ...
+) {
+  if (isTRUE(rsquare)) {
+    cli::cli_warn(
+      "{.arg rsquare = TRUE} is not implemented yet."
+    )
+  }
+
+  vb_correction <- all(!is.na(object@external$inlavaan_internal$vb$correction))
+
+  ## ----- Header --------------------------------------------------------------
+  if (isTRUE(header)) {
+    show_inlavaan(object)
+  }
+
+  ## ----- Fit measures --------------------------------------------------------
+  if (isTRUE(fit.measures) & length(object@Fit@test$ppp) > 0) {
+    # DIC
+    dic_list <- object@external$inlavaan_internal$DIC
+    cat(
+      "\nInformation Criteria:\n\n",
+      sprintf("  %-38s", "Deviance (DIC)"),
+      sprintf("  %10.3f", dic_list$dic),
+      "\n",
+      sprintf("  %-38s", "Effective parameters (pD)"),
+      sprintf("  %10.3f", dic_list$pD),
+      "\n"
+    )
+  }
+
+  if (isTRUE(estimates)) {
+    marg_method <- object@external$inlavaan_internal$marginal_method
+    # if (marg_method == "skewnorm")
+    #   marg_method <- "Skew Normal"
+    # else if (marg_method == "asymgaus")
+    #   marg_method <- "Two-piece Gaussian"
+    # else if (marg_method == "marggaus")
+    #   marg_method <- "Marginal Gaussian"
+    # else if (marg_method == "sampling")
+    #   marg_method <- "Sampling"
+
+    PE <- lavaan::parameterEstimates(
+      object,
+      se = FALSE, # create our own
+      zstat = FALSE,
+      ci = TRUE,
+      standardized = FALSE,
+      rsquare = rsquare,
+      remove.eq = FALSE,
+      remove.system.eq = TRUE,
+      remove.ineq = FALSE,
+      remove.def = FALSE,
+      header = TRUE,
+      output = "text"
+    )
+    if (is.null(PE$block)) {
+      PE$block <- 1
+      PE$block[PE$op == ":="] <- 0
+    }
+
+    # # If PML, remove intercepts when not estimated
+    # if (object@Model@estimator == "PML") {
+    #   browser()
+    # }
+
+    # Now need to put information into PE from pt and summary
+    pt <- object@ParTable
+    ptfreeidx <- which(pt$free > 0)
+    ptdefidx <- which(pt$op == ":=")
+    ptdeltaidx <- which(pt$op == "~*~")
+    ptidx <- c(ptfreeidx, ptdefidx, ptdeltaidx)
+    summ <- object@external$inlavaan_internal$summary
+    peidx <- match(
+      paste0(
+        pt$lhs[ptidx],
+        pt$op[ptidx],
+        pt$rhs[ptidx],
+        pt$block[ptidx]
+      ),
+      paste0(PE$lhs, PE$op, PE$rhs, PE$block)
+    )
+    summidx <- match(pt$free[pt$free > 0], seq_len(nrow(summ)))
+    if (length(ptdefidx) > 0 | length(ptdeltaidx) > 0) {
+      # FIXME: I think this should be ok, since pt$free always in increasing
+      # order
+      summidx <- seq_len(nrow(summ))
+    }
+
+    char.format <- paste("%", max(8, nd + 5), "s", sep = "")
+    PE$SD <- ""
+    PE$SD[peidx] <- formatC(summ$SD[summidx], digits = nd, format = "f")
+
+    PE$`2.5%` <- ""
+    PE$`2.5%`[peidx] <- formatC(summ$`2.5%`[summidx], digits = nd, format = "f")
+
+    if (isTRUE(postmedian)) {
+      PE$`50%` <- ""
+      PE$`50%`[peidx] <- formatC(summ$`50%`[summidx], digits = nd, format = "f")
+    }
+
+    PE$`97.5%` <- ""
+    PE$`97.5%`[peidx] <- formatC(
+      summ$`97.5%`[summidx],
+      digits = nd,
+      format = "f"
+    )
+
+    if (isTRUE(postmode)) {
+      PE$Mode <- ""
+      PE$Mode[peidx] <- formatC(summ$Mode[summidx], digits = nd, format = "f")
+    }
+
+    # Standardised solution?
+    if (isTRUE(standardized)) {
+      stdlv <- standardisedsolution(object, type = "std.lv")
+      stdall <- standardisedsolution(object, type = "std.all")
+      PE$std.lv <- stdlv$est
+      PE$std.all <- stdall$est
+    }
+
+    # Add NMAD or KLD from VB correction
+    nmad <- try(
+      object@external$inlavaan_internal$approx_data[, "nmad"],
+      silent = TRUE
+    )
+    if (length(nmad) > 0 & !inherits(nmad, "try-error")) {
+      PE$NMAD <- ""
+      PE$NMAD[peidx] <- formatC(
+        nmad[summidx],
+        digits = nd,
+        format = "f"
+      )
+      # PE$NMAD[peidx] <- paste0(PE$NMAD[peidx], "%")
+      PE$NMAD[peidx][grepl("NA", PE$NMAD[peidx])] <- ""
+    } else {
+      kld <- try(
+        object@external$inlavaan_internal$approx_data[, "kld"],
+        silent = TRUE
+      )
+      if (isTRUE(vb_correction) & !inherits(kld, "try-error")) {
+        PE$KLD <- ""
+        PE$KLD[peidx] <- formatC(summ$kld[summidx], digits = nd, format = "f")
+        PE$KLD[peidx][is.na(PE$KLD[peidx])] <- ""
+      }
+    }
+
+    if (isTRUE(priors)) {
+      PE$Prior <- ""
+      PE$Prior[peidx] <- summ$Prior[summidx]
+      PE$Prior[peidx][is.na(PE$Prior[peidx])] <- ""
+    }
+  }
+
+  # If PML, intercepts shown regardless
+  if (object@Model@estimator == "PML") {
+    int_idx <- PE$est == 0 & pt$op == "~1"
+    PE <- PE[!int_idx, ]
+  }
+
+  # Repair credible intervals labels
+  garb <- capture.output(PE)
+  garb <- gsub("X2.5.", " 2.5%", garb)
+  garb <- gsub(" X50.", "  50%", garb)
+  garb <- gsub("X97.5.", " 97.5%", garb)
+
+  # Add Parameter Estimates section
+  idxpehead <- grep("Parameter Estimates", garb)
+  idxparameterization <- grep("Parameterization", garb)
+  if (length(idxparameterization) > 0) {
+    garb <- garb[-idxparameterization]
+  }
+
+  newgarb <- garb[1:(idxpehead + 1)]
+  if (length(idxparameterization) > 0) {
+    PARAMZ <- gsub(
+      "^([a-z])",
+      "\\U\\1",
+      object@Options$parameterization,
+      perl = TRUE
+    )
+    newgarb <- c(
+      newgarb,
+      capture.output(cat(
+        "\n",
+        sprintf("  %-38s", "Parameterization"),
+        sprintf("  %10s", PARAMZ)
+      ))[2]
+    )
+  }
+  newgarb <- c(
+    newgarb,
+    capture.output(cat(
+      "\n",
+      sprintf("  %-38s", "Marginalisation method"),
+      sprintf("  %10s", toupper(marg_method))
+    ))[2],
+    capture.output(cat(
+      "\n",
+      sprintf("  %-38s", "VB correction"),
+      sprintf("  %10s", toupper(vb_correction))
+    ))[2],
+    garb[(idxpehead + 2):length(garb)]
+  )
+
+  # Print
+  cat(paste0(newgarb, collapse = "\n"))
+  cat("\n")
+}
+
+#' @param header Logical; if TRUE, print model fit information header.
+#' @param fit.measures Logical; if TRUE, print fit measures (DIC and PPP).
+#' @param estimates Logical; if TRUE, print parameter estimates table.
+#' @param standardized Logical; if TRUE, include standardized estimates.
+#' @param rsquare Logical; if TRUE, include R-square values.
+#' @param postmedian Logical; if TRUE, include posterior median in estimates.
+#' @param postmode Logical; if TRUE, include posterior mode in estimates.
+#' @param priors Logical; if TRUE, include prior information in estimates.
+#' @param nd Integer; number of decimal places to print for numeric values.
+#'
+#' @rdname INLAvaan-class
+#' @export
+setMethod("summary", "INLAvaan", summary_inlavaan)

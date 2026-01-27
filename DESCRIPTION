@@ -1,0 +1,42 @@
+Type: Package
+Package: INLAvaan
+Title: Approximate Bayesian Latent Variable Analysis
+Version: 0.2.2
+Authors@R: c(
+    person("Haziq", "Jamil", , "haziq.jamil@gmail.com", role = c("aut", "cre", "cph"),
+           comment = c(ORCID = "0000-0003-3298-1010")),
+    person("Håvard", "Rue", role = "ctb",
+           comment = c(ORCID = "0000-0002-0222-1881", "Statistical and computational methodology")),
+    person("Alvin", "Bong", role = "ctb",
+           comment = "Initial site build")
+  )
+Description: Implements approximate Bayesian inference for Structural
+    Equation Models (SEM) using a custom adaptation of the Integrated
+    Nested Laplace Approximation as described in Rue et al. (2009)
+    <doi:10.1111/j.1467-9868.2008.00700.x>. Provides a computationally
+    efficient alternative to Markov Chain Monte Carlo (MCMC) for Bayesian
+    estimation, allowing users to fit latent variable models using the
+    'lavaan' syntax.
+License: GPL (>= 3)
+URL: https://inlavaan.haziqj.ml/, https://github.com/haziqj/INLAvaan
+BugReports: https://github.com/haziqj/INLAvaan/issues
+Imports: blavaan, cli, cowplot, dplyr, ggplot2, lavaan, methods,
+        modeest, mvtnorm, numDeriv, qrng, scales, statmod, stats,
+        tidyr, ucminf, utils
+Suggests: future, knitr, lme4, psychotools, quarto, rmarkdown, rstan,
+        sn, spacefillr, testthat (>= 3.0.0)
+VignetteBuilder: quarto
+Config/Needs/website: rmarkdown
+Config/testthat/edition: 3
+Encoding: UTF-8
+RoxygenNote: 7.3.3
+NeedsCompilation: no
+Packaged: 2026-01-22 20:45:28 UTC; haziqj
+Author: Haziq Jamil [aut, cre, cph] (ORCID:
+    <https://orcid.org/0000-0003-3298-1010>),
+  Håvard Rue [ctb] (ORCID: <https://orcid.org/0000-0002-0222-1881>,
+    Statistical and computational methodology),
+  Alvin Bong [ctb] (Initial site build)
+Maintainer: Haziq Jamil <haziq.jamil@gmail.com>
+Repository: CRAN
+Date/Publication: 2026-01-27 09:30:02 UTC
