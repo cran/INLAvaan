@@ -2786,16 +2786,16 @@ text-decoration: underline; }
 <span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; ✔ Finding posterior mode. [10ms]</span></span>
 <span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
 <span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; ℹ Computing the Hessian.</span></span>
-<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; ✔ Computing the Hessian. [26ms]</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; ✔ Computing the Hessian. [27ms]</span></span>
 <span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
 <span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; ℹ Performing VB correction.</span></span>
-<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; ✔ VB correction; mean |δ| = 0.012σ. [49ms]</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; ✔ VB correction; mean |δ| = 0.012σ. [51ms]</span></span>
 <span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
 <span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; ⠙ Fitting skew normal to 0/7 marginals.</span></span>
-<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; ✔ Fitting skew normal to 7/7 marginals. [61ms]</span></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; ✔ Fitting skew normal to 7/7 marginals. [63ms]</span></span>
 <span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
 <span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; ⠙ Computing ppp and DIC.</span></span>
-<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; ✔ Computing ppp and DIC. [110ms]</span></span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; ✔ Computing ppp and DIC. [109ms]</span></span>
 <span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span></code></pre></div>
 </div>
 <p>The user may wish to specify different prior distributions for the parameters. See the relevant section in the <a href="https://inlavaan.haziqj.ml/articles/INLAvaan.html#setting-priors">Get started</a> vignetted for further details.</p>
@@ -2803,7 +2803,7 @@ text-decoration: underline; }
 <p>The summary output provides the posterior mean, standard deviation, and 95% credible intervals for all paths.</p>
 <div class="cell">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="fu">summary</span>(fit)</span>
-<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; INLAvaan 0.2.2 ended normally after 5 iterations</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; INLAvaan 0.2.3 ended normally after 5 iterations</span></span>
 <span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
 <span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;   Estimator                                      BAYES</span></span>
 <span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;   Optimization method                           NLMINB</span></span>
@@ -2814,12 +2814,12 @@ text-decoration: underline; }
 <span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Model Test (User Model):</span></span>
 <span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
 <span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;    Marginal log-likelihood                    -311.858 </span></span>
-<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;    PPP (Chi-square)                              0.604 </span></span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;    PPP (Chi-square)                              0.612 </span></span>
 <span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
 <span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Information Criteria:</span></span>
 <span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;    Deviance (DIC)                              568.665 </span></span>
-<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;    Effective parameters (pD)                     6.876 </span></span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;    Deviance (DIC)                              568.307 </span></span>
+<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;    Effective parameters (pD)                     6.697 </span></span>
 <span id="cb4-19"><a href="#cb4-19" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
 <span id="cb4-20"><a href="#cb4-20" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Parameter Estimates:</span></span>
 <span id="cb4-21"><a href="#cb4-21" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
@@ -2829,34 +2829,34 @@ text-decoration: underline; }
 <span id="cb4-25"><a href="#cb4-25" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Regressions:</span></span>
 <span id="cb4-26"><a href="#cb4-26" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;                    Estimate       SD     2.5%    97.5%     NMAD    Prior       </span></span>
 <span id="cb4-27"><a href="#cb4-27" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;   Y ~                                                                          </span></span>
-<span id="cb4-28"><a href="#cb4-28" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;     X          (c)   -0.060    0.120   -0.296    0.176    0.001    normal(0,10)</span></span>
+<span id="cb4-28"><a href="#cb4-28" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;     X          (c)   -0.060    0.118   -0.291    0.171    0.000    normal(0,10)</span></span>
 <span id="cb4-29"><a href="#cb4-29" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;   M ~                                                                          </span></span>
-<span id="cb4-30"><a href="#cb4-30" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;     X          (a)    0.525    0.109    0.311    0.740    0.000    normal(0,10)</span></span>
+<span id="cb4-30"><a href="#cb4-30" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;     X          (a)    0.525    0.108    0.315    0.736    0.000    normal(0,10)</span></span>
 <span id="cb4-31"><a href="#cb4-31" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;   Y ~                                                                          </span></span>
-<span id="cb4-32"><a href="#cb4-32" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;     M          (b)    0.771    0.101    0.573    0.968    0.000    normal(0,10)</span></span>
+<span id="cb4-32"><a href="#cb4-32" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;     M          (b)    0.771    0.099    0.577    0.964    0.000    normal(0,10)</span></span>
 <span id="cb4-33"><a href="#cb4-33" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
 <span id="cb4-34"><a href="#cb4-34" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Intercepts:</span></span>
 <span id="cb4-35"><a href="#cb4-35" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;                    Estimate       SD     2.5%    97.5%     NMAD    Prior       </span></span>
-<span id="cb4-36"><a href="#cb4-36" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;    .Y                -0.071    0.100   -0.267    0.126    0.000    normal(0,32)</span></span>
-<span id="cb4-37"><a href="#cb4-37" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;    .M                 0.126    0.100   -0.071    0.322    0.000    normal(0,32)</span></span>
+<span id="cb4-36"><a href="#cb4-36" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;    .Y                -0.071    0.098   -0.263    0.122    0.000    normal(0,32)</span></span>
+<span id="cb4-37"><a href="#cb4-37" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;    .M                 0.126    0.099   -0.068    0.319    0.000    normal(0,32)</span></span>
 <span id="cb4-38"><a href="#cb4-38" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
 <span id="cb4-39"><a href="#cb4-39" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Variances:</span></span>
 <span id="cb4-40"><a href="#cb4-40" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;                    Estimate       SD     2.5%    97.5%     NMAD    Prior       </span></span>
-<span id="cb4-41"><a href="#cb4-41" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;    .Y                 0.976    0.145    0.732    1.299    0.004 gamma(1,.5)[sd]</span></span>
-<span id="cb4-42"><a href="#cb4-42" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;    .M                 0.997    0.147    0.749    1.326    0.004 gamma(1,.5)[sd]</span></span>
+<span id="cb4-41"><a href="#cb4-41" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;    .Y                 0.977    0.145    0.733    1.303    0.006 gamma(1,.5)[sd]</span></span>
+<span id="cb4-42"><a href="#cb4-42" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;    .M                 0.998    0.147    0.749    1.325    0.006 gamma(1,.5)[sd]</span></span>
 <span id="cb4-43"><a href="#cb4-43" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; </span></span>
 <span id="cb4-44"><a href="#cb4-44" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt; Defined Parameters:</span></span>
 <span id="cb4-45"><a href="#cb4-45" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;                    Estimate       SD     2.5%    97.5%     NMAD    Prior       </span></span>
-<span id="cb4-46"><a href="#cb4-46" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;     ab                0.403    0.097    0.246    0.596                         </span></span>
-<span id="cb4-47"><a href="#cb4-47" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;     total             0.347    0.128    0.101    0.592</span></span></code></pre></div>
+<span id="cb4-46"><a href="#cb4-46" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;     ab                0.403    0.095    0.249    0.593                         </span></span>
+<span id="cb4-47"><a href="#cb4-47" aria-hidden="true" tabindex="-1"></a><span class="co">#&gt;     total             0.347    0.126    0.105    0.587</span></span></code></pre></div>
 </div>
 <p>Looking at the Regressions and Defined Parameters sections of the output:</p>
 <ul>
 <li>Both intercepts are non-significant, since we simulated data with true means of zero.</li>
 <li>Path <span class="math inline"><em>a</em></span> (<code>M ~ X</code>) estimated at 0.525 (true value 0.5).</li>
 <li>Path <span class="math inline"><em>b</em></span> (<code>Y ~ M</code>) estimated at 0.771 (true value 0.7).</li>
-<li>Path <span class="math inline"><em>c</em></span> (<code>Y ~ X</code>) estimated at -0.060. The 95% Credible Interval [-0.296, 0.176] includes zero, correctly identifying that there is no direct effect.</li>
-<li>Indirect Effect <span class="math inline"><em>a</em><em>b</em></span> estimated at 0.403 (true value 0.35). The interval [0.246, 0.596] does not cross zero, indicating significant mediation.</li>
+<li>Path <span class="math inline"><em>c</em></span> (<code>Y ~ X</code>) estimated at -0.060. The 95% Credible Interval [-0.291, 0.171] includes zero, correctly identifying that there is no direct effect.</li>
+<li>Indirect Effect <span class="math inline"><em>a</em><em>b</em></span> estimated at 0.403 (true value 0.35). The interval [0.249, 0.593] does not cross zero, indicating significant mediation.</li>
 <li>Total Effect estimated at 0.347.
 <ul>
 <li>This is the sum of the direct and indirect effects (<span class="math inline"><em>c</em> + <em>a</em><em>b</em></span>).</li>

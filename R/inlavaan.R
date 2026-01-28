@@ -262,7 +262,7 @@ inlavaan <- function(
   Sigma_theta <- solve(0.5 * (H_neg + t(H_neg)))
   lp_max <- joint_lp(theta_star) # before correction
 
-  # Eigen decomposition for whitening z = L^{-1}(theta - theta*)
+  # Choleski or eigen decomposition for whitening z = L^{-1}(theta - theta*)
   if (TRUE) {
     L <- t(chol(Sigma_theta))
   } else {
@@ -344,7 +344,6 @@ inlavaan <- function(
   theta_star_vbc <- theta_star
   if (isTRUE(vb_correction)) {
     theta_star_vbc <- theta_star + vb_shift
-    theta_star <- theta_star + vb_shift
   }
   if (ceq.simple) {
     theta_star_trans <- pars_to_x(as.numeric(ceq.K %*% theta_star_vbc), pt)
@@ -384,7 +383,7 @@ inlavaan <- function(
       if (marginal_correction == "none") {
         gamma1j <- 0
       } else {
-        th_plus <- theta_star + L[, .j] * delta_outer
+        th_plus <- theta_star + Vscan[, .j] * delta_outer
         if (marginal_correction == "hessian") {
           Htheta1_full <- numDeriv::jacobian(
             function(x) -1 * joint_lp_grad(x),

@@ -10,6 +10,8 @@ experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](h
 [![R-CMD-check](https://github.com/haziqj/INLAvaan/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/haziqj/INLAvaan/actions/workflows/R-CMD-check.yaml)
 [![Codecov test
 coverage](https://codecov.io/gh/haziqj/INLAvaan/branch/main/graph/badge.svg)](https://app.codecov.io/gh/haziqj/INLAvaan?branch=main)
+[![CRAN_Status_Badge_version_ago](http://www.r-pkg.org/badges/version-ago/INLAvaan)](https://cran.r-project.org/package=INLAvaan)
+[![](http://cranlogs.r-pkg.org/badges/grand-total/INLAvaan)](https://cran.r-project.org/package=INLAvaan)
 <!-- badges: end -->
 
 > Efficient approximate Bayesian inference for Structural Equation
@@ -37,10 +39,11 @@ SEM applied to the Industrialisation and Political Democracy data set of
 Bollen (1989)[^1]:
 
 ``` r
+library(INLAvaan)
 model <- "
   # Latent variable definitions
      ind60 =~ x1 + x2 + x3
-     dem60 =~ y1 + y2 + y3 + y4
+     dem60 =~ y1 + y2 + y3
      dem65 =~ y5 + y6 + y7 + y8
 
   # Latent regressions
@@ -54,113 +57,120 @@ model <- "
     y4 ~~ y8
     y6 ~~ y8
   
+  # Fixed loading
+    dem60 =~ 1.5*y4
+  
   # Custom priors on latent variances
     ind60 ~~ prior('gamma(1, 1)')*ind60
-    dem60 ~~ prior('gamma(1,.9)')*dem60
+    dem60 ~~ prior('gamma(2, 1)')*dem60
     dem65 ~~ prior('gamma(1,.5)')*dem65
 "
 utils::data("PoliticalDemocracy", package = "lavaan")
 
-fit <- asem(model, PoliticalDemocracy, marginal_method = "skewnorm", vb_correction = FALSE)
+fit <- asem(model, PoliticalDemocracy)
 #> ℹ Finding posterior mode.
-#> ✔ Finding posterior mode. [34ms]
+#> ✔ Finding posterior mode. [35ms]
 #> 
 #> ℹ Computing the Hessian.
-#> ✔ Computing the Hessian. [113ms]
+#> ✔ Computing the Hessian. [92ms]
 #> 
-#> ⠙ Fitting skew normal to 0/31 marginals.
-#> ⠹ Fitting skew normal to 5/31 marginals.
-#> ⠸ Fitting skew normal to 16/31 marginals.
-#> ⠼ Fitting skew normal to 27/31 marginals.
-#> ✔ Fitting skew normal to 31/31 marginals. [612ms]
+#> ℹ Performing VB correction.
+#> ✔ VB correction; mean |δ| = 0.035σ. [84ms]
+#> 
+#> ⠙ Fitting skew normal to 0/30 marginals.
+#> ⠹ Fitting skew normal to 6/30 marginals.
+#> ⠸ Fitting skew normal to 18/30 marginals.
+#> ⠼ Fitting skew normal to 29/30 marginals.
+#> ✔ Fitting skew normal to 30/30 marginals. [549ms]
 #> 
 #> ℹ Sampling covariances and defined parameters.
-#> ✔ Sampling covariances and defined parameters. [64ms]
+#> ✔ Sampling covariances and defined parameters. [59ms]
 #> 
 #> ⠙ Computing ppp and DIC.
 #> ⠹ Computing ppp and DIC.
-#> ✔ Computing ppp and DIC. [202ms]
+#> ✔ Computing ppp and DIC. [192ms]
 #> 
 
 summary(fit)
-#> INLAvaan 0.2.1.9006 ended normally after 71 iterations
+#> INLAvaan 0.2.3 ended normally after 80 iterations
 #> 
 #>   Estimator                                      BAYES
 #>   Optimization method                           NLMINB
-#>   Number of model parameters                        31
+#>   Number of model parameters                        30
 #> 
 #>   Number of observations                            75
 #> 
 #> Model Test (User Model):
 #> 
-#>    Marginal log-likelihood                   -1641.277 
-#>    PPP (Chi-square)                              0.174 
+#>    Marginal log-likelihood                   -1651.231 
+#>    PPP (Chi-square)                              0.170 
 #> 
 #> Information Criteria:
 #> 
-#>    Deviance (DIC)                             3224.940 
-#>    Effective parameters (pD)                    64.327 
+#>    Deviance (DIC)                             3214.887 
+#>    Effective parameters (pD)                    58.157 
 #> 
 #> Parameter Estimates:
 #> 
 #>    Marginalisation method                     SKEWNORM
-#>    VB correction                                 FALSE
+#>    VB correction                                  TRUE
 #> 
 #> Latent Variables:
 #>                    Estimate       SD     2.5%    97.5%     NMAD    Prior       
 #>   ind60 =~                                                                     
 #>     x1                1.000                                                    
-#>     x2                2.214    0.145    1.946    2.516    0.005    normal(0,10)
-#>     x3                1.824    0.154    1.534    2.140    0.007    normal(0,10)
+#>     x2                2.213    0.145    1.945    2.515    0.006    normal(0,10)
+#>     x3                1.847    0.156    1.552    2.166    0.006    normal(0,10)
 #>   dem60 =~                                                                     
 #>     y1                1.000                                                    
-#>     y2                1.355    0.206    0.976    1.784    0.010    normal(0,10)
-#>     y3                1.120    0.160    0.824    1.450    0.008    normal(0,10)
-#>     y4                1.368    0.173    1.057    1.736    0.009    normal(0,10)
+#>     y2                1.443    0.168    1.118    1.777    0.001    normal(0,10)
+#>     y3                1.168    0.155    0.868    1.478    0.001    normal(0,10)
 #>   dem65 =~                                                                     
 #>     y5                1.000                                                    
-#>     y6                1.213    0.178    0.886    1.586    0.015    normal(0,10)
-#>     y7                1.318    0.169    1.015    1.676    0.011    normal(0,10)
-#>     y8                1.316    0.176    1.003    1.692    0.012    normal(0,10)
+#>     y6                1.260    0.188    0.921    1.659    0.012    normal(0,10)
+#>     y7                1.362    0.175    1.042    1.731    0.022    normal(0,10)
+#>     y8                1.384    0.182    1.056    1.770    0.023    normal(0,10)
+#>   dem60 =~                                                                     
+#>     y4                1.500                                                    
 #> 
 #> Regressions:
 #>                    Estimate       SD     2.5%    97.5%     NMAD    Prior       
 #>   dem60 ~                                                                      
-#>     ind60             1.466    0.381    0.738    2.234    0.003    normal(0,10)
+#>     ind60             1.379    0.348    0.706    2.069    0.001    normal(0,10)
 #>   dem65 ~                                                                      
-#>     ind60             0.566    0.242    0.100    1.050    0.002    normal(0,10)
-#>     dem60             0.868    0.106    0.671    1.089    0.021    normal(0,10)
+#>     ind60             0.524    0.234    0.073    0.991    0.001    normal(0,10)
+#>     dem60             0.885    0.106    0.688    1.103    0.020    normal(0,10)
 #> 
 #> Covariances:
 #>                    Estimate       SD     2.5%    97.5%     NMAD    Prior       
 #>  .y1 ~~                                                                        
-#>    .y5                0.294    0.383    0.027    1.529    0.003       beta(1,1)
+#>    .y5                0.330    0.410    0.132    1.739    0.006       beta(1,1)
 #>  .y2 ~~                                                                        
-#>    .y4                0.242    0.692    0.003    2.715    0.004       beta(1,1)
-#>    .y6                0.343    0.702    0.779    3.536    0.019       beta(1,1)
+#>    .y4                0.216    0.675   -0.134    2.517    0.004       beta(1,1)
+#>    .y6                0.348    0.748    0.851    3.789    0.010       beta(1,1)
 #>  .y3 ~~                                                                        
-#>    .y7                0.209    0.619   -0.255    2.174    0.005       beta(1,1)
-#>  .y4 ~~                                                                        
-#>    .y8                0.099    0.463   -0.496    1.324    0.007       beta(1,1)
+#>    .y7                0.224    0.658   -0.207    2.378    0.005       beta(1,1)
+#>  .y8 ~~                                                                        
+#>    .y4                0.069    0.448   -0.538    1.218    0.004       beta(1,1)
 #>  .y6 ~~                                                                        
-#>    .y8                0.310    0.576    0.258    2.520    0.005       beta(1,1)
+#>    .y8                0.309    0.579    0.252    2.520    0.005       beta(1,1)
 #> 
 #> Variances:
 #>                    Estimate       SD     2.5%    97.5%     NMAD    Prior       
-#>     ind60             0.469    0.092    0.317    0.674    0.003      gamma(1,1)
-#>    .dem60             3.536    0.809    5.322    2.161    0.009     gamma(1,.9)
-#>    .dem65             0.350    0.202    4.581    0.057    0.035     gamma(1,.5)
-#>    .x1                0.085    0.020    0.196    0.050    0.004 gamma(1,.5)[sd]
-#>    .x2                0.127    0.065    1.425    0.021    0.042 gamma(1,.5)[sd]
-#>    .x3                0.493    0.096    0.333    0.708    0.003 gamma(1,.5)[sd]
-#>    .y1                2.037    0.498    4.655    1.195    0.008 gamma(1,.5)[sd]
-#>    .y2                7.791    1.444    5.347   10.985    0.004 gamma(1,.5)[sd]
-#>    .y3                5.321    1.037    3.601    7.651    0.001 gamma(1,.5)[sd]
-#>    .y4                3.246    0.791    7.739    1.885    0.010 gamma(1,.5)[sd]
-#>    .y5                2.495    0.524    3.667    1.622    0.007 gamma(1,.5)[sd]
-#>    .y6                5.211    0.960    3.591    7.341    0.002 gamma(1,.5)[sd]
-#>    .y7                3.577    0.764    5.283    2.304    0.009 gamma(1,.5)[sd]
-#>    .y8                3.381    0.736    5.005    2.130    0.005 gamma(1,.5)[sd]
+#>     ind60             0.455    0.089    0.308    0.654    0.003      gamma(1,1)
+#>    .dem60             3.121    0.602    2.109    4.458    0.000      gamma(2,1)
+#>    .dem65             0.340    0.196    4.237    0.059    0.043     gamma(1,.5)
+#>    .x1                0.088    0.021    0.196    0.053    0.007 gamma(1,.5)[sd]
+#>    .x2                0.124    0.065    1.503    0.019    0.040 gamma(1,.5)[sd]
+#>    .x3                0.500    0.098    0.337    0.718    0.003 gamma(1,.5)[sd]
+#>    .y1                2.311    0.490    3.406    1.495    0.004 gamma(1,.5)[sd]
+#>    .y2                7.504    1.414   10.634    5.114    0.003 gamma(1,.5)[sd]
+#>    .y3                5.500    1.063    3.733    7.883    0.002 gamma(1,.5)[sd]
+#>    .y5                2.627    0.541    3.836    1.724    0.005 gamma(1,.5)[sd]
+#>    .y6                5.132    0.947    3.529    7.227    0.003 gamma(1,.5)[sd]
+#>    .y7                3.610    0.771    5.332    2.324    0.008 gamma(1,.5)[sd]
+#>    .y8                3.210    0.718    4.794    1.988    0.006 gamma(1,.5)[sd]
+#>    .y4                2.872    0.747    7.211    1.607    0.009 gamma(1,.5)[sd]
 ```
 
 ## Validation against MCMC
@@ -171,8 +181,9 @@ comparable to those obtained via MCMC (e.g., via `{blavaan}`/Stan), but
 at a fraction of the computational cost.
 
 The figure below illustrates the posterior density overlap for the
-example above. The percentages refer to (one minus) the [Jensen-Shannon
-divergence](https://en.wikipedia.org/wiki/Jensen–Shannon_divergence),
+example above. The percentages refer to the one minus the
+[Jensen-Shannon
+distance](https://en.wikipedia.org/wiki/Jensen–Shannon_divergence),
 which gives a measure of similarity between two probability
 distributions.
 
@@ -188,7 +199,14 @@ print(res$p_compare)
 
 ## Installation
 
-Install the development version of `{INLAvaan}` from GitHub using:
+Install the CRAN version of `{INLAvaan}` using:
+
+``` r
+install.packages("INLAvaan")
+```
+
+Alternatively, install the development version of `{INLAvaan}` from
+GitHub using:
 
 ``` r
 # install.packages("pak")
@@ -209,265 +227,24 @@ install.packages(
 )
 ```
 
-<!-- ## Political democracy data -->
-
-<!-- The quintessential example for SEM is this model from Bollen (1989) to fit a political democracy data set. -->
-
-<!-- Eleven observed variables are hypothesized to arise from three latent variables. -->
-
-<!-- This set includes data from 75 developing countries each assessed on four measures of democracy measured twice (1960 and 1965), and three measures of industrialization measured once (1960).  -->
-
-<!-- The eleven observed variables are: -->
-
-<!-- -   `y1`: Freedom of the press, 1960 -->
-
-<!-- -   `y2`: Freedom of political opposition, 1960 -->
-
-<!-- -   `y3`: Fairness of elections, 1960 -->
-
-<!-- -   `y4`: Effectiveness of elected legislature, 1960 -->
-
-<!-- -   `y5`: Freedom of the press, 1965 -->
-
-<!-- -   `y6`: Freedom of political opposition, 1965 -->
-
-<!-- -   `y7`: Fairness of elections, 1965 -->
-
-<!-- -   `y8`: Effectiveness of elected legislature, 1965 -->
-
-<!-- -   `y9`: GNP per capita, 1960 -->
-
-<!-- -   `y10`: Energy consumption per capita, 1960 -->
-
-<!-- -   `y11`: Percentage of labor force in industry, 1960 -->
-
-<!-- Variables `y1-y4` and `y5-y8` are typically used as indicators of the latent trait of "political democracy" in 1960 and 1965 respectively, whereas `y9-y11` are used as indicators of industrialization (1960). -->
-
-<!-- It is theorised that industrialisation influences political democracy, and that political democracy in 1960 influences political democracy in 1965. -->
-
-<!-- Since the items measure the same latent trait at two time points, there is an assumption that the residuals of these items will be correlated with each other. -->
-
-<!-- The model is depicted in the figure below. -->
-
-<!-- ```{r} -->
-
-<!-- #| echo: false -->
-
-<!-- knitr::include_graphics("https://lavaan.ugent.be/figures/sem.png") -->
-
-<!-- ``` -->
-
-<!-- The corresponding model in `{lavaan}` syntax is: -->
-
-<!-- ```{r} -->
-
-<!-- mod <- " -->
-
-<!--   # latent variables -->
-
-<!--   dem60 =~ y1 + y2 + y3 + y4 -->
-
-<!--   dem65 =~ y5 + y6 + y7 + y8 -->
-
-<!--   ind60 =~ x1 + x2 + x3 -->
-
-<!--   # latent regressions -->
-
-<!--   dem60 ~ ind60 -->
-
-<!--   dem65 ~ ind60 + dem60 -->
-
-<!--   # residual covariances -->
-
-<!--   y1 ~~ y5 -->
-
-<!--   y2 ~~ y4 + y6 -->
-
-<!--   y3 ~~ y7 -->
-
-<!--   y4 ~~ y8 -->
-
-<!--   y6 ~~ y8 -->
-
-<!-- " -->
-
-<!-- ``` -->
-
-<!-- We will fit this model using `{INLAvaan}` and compare the results with `{blavaan}`. -->
-
-<!-- ```{r} -->
-
-<!-- #| label: poldemfit -->
-
-<!-- #| include: false -->
-
-<!-- #| cache: true -->
-
-<!-- data("PoliticalDemocracy", package = "lavaan") -->
-
-<!-- poldemfit <- insem(mod, PoliticalDemocracy, meanstructure = !TRUE, bcontrol = list(num.threads = 6)) -->
-
-<!-- library(future) -->
-
-<!-- plan("multisession") -->
-
-<!-- poldemfit_blav <- bsem( -->
-
-<!--   model = mod,  -->
-
-<!--   data = PoliticalDemocracy, -->
-
-<!--   # meanstructure = TRUE, -->
-
-<!--   n.chains = 3, -->
-
-<!--   bcontrol = list(cores = 3) -->
-
-<!--   # burnin = 5000, -->
-
-<!--   # sample = 10000 -->
-
-<!-- ) -->
-
-<!-- ``` -->
-
-<!-- ```{r} -->
-
-<!-- #| eval: false -->
-
-<!-- data("PoliticalDemocracy", package = "lavaan") -->
-
-<!-- poldemfit <- insem(model = mod, data = PoliticalDemocracy) -->
-
-<!-- summary(poldemfit) -->
-
-<!-- ``` -->
-
-<!-- ```{r} -->
-
-<!-- #| echo: false -->
-
-<!-- summary(poldemfit) # -->
-
-<!-- ``` -->
-
-<!-- ```{r} -->
-
-<!-- #| label: fig-poldem -->
-
-<!-- #| echo: false -->
-
-<!-- # -->
-
-<!-- garb <- capture.output(tmp <- summary(poldemfit)) -->
-
-<!-- PE_inla <- tibble( -->
-
-<!--   est = as.numeric(tmp[, "Estimate"]), -->
-
-<!--   ci.lower = as.numeric(tmp[, "pi.lower"]), -->
-
-<!--   ci.upper = as.numeric(tmp[, "pi.upper"]) -->
-
-<!-- ) |> -->
-
-<!--   mutate(method = "INLAvaan") -->
-
-<!-- garb <- capture.output(tmp <- summary(poldemfit_blav)) -->
-
-<!-- PE_blav <- tibble( -->
-
-<!--   est = as.numeric(tmp[, "Estimate"]), -->
-
-<!--   ci.lower = as.numeric(tmp[, "pi.lower"]), -->
-
-<!--   ci.upper = as.numeric(tmp[, "pi.upper"]) -->
-
-<!-- ) |> -->
-
-<!--   mutate(method = "blavaan") -->
-
-<!-- bind_rows( -->
-
-<!--   PE_inla, PE_blav -->
-
-<!-- ) |> -->
-
-<!--   mutate( -->
-
-<!--     free = rep(partable(poldemfit)$free, 2), -->
-
-<!--     pxnames = rep(partable(poldemfit)$pxnames, 2), -->
-
-<!--     type = gsub("\\[[^]]*\\]", "", pxnames) -->
-
-<!--   ) |> -->
-
-<!--   drop_na() |> -->
-
-<!--   mutate(names = factor(rep(names(coef(poldemfit)), 2), levels = rev(names(coef(fit))))) |> -->
-
-<!--   pivot_wider( -->
-
-<!--     names_from = method, -->
-
-<!--     values_from = c(est, ci.lower, ci.upper) -->
-
-<!--   ) |> -->
-
-<!--   ggplot(aes(est_INLAvaan, est_blavaan, col = type)) + -->
-
-<!--   geom_abline(slope = 1, intercept = 0, linetype = 2) + -->
-
-<!--   geom_point(size = 3) + -->
-
-<!--   geom_errorbar(aes(xmin = ci.lower_INLAvaan, xmax = ci.upper_INLAvaan), width = 0.1, alpha = 0.3) + -->
-
-<!--   geom_errorbar(aes(ymin = ci.lower_blavaan, ymax = ci.upper_blavaan), width = 0.1, alpha = 0.3) + -->
-
-<!--   theme_bw() + -->
-
-<!--   labs( -->
-
-<!--     x = "{INLAvaan} estimates", -->
-
-<!--     y = "{blavaan} estimates", -->
-
-<!--     col = "Parameter\ntype", -->
-
-<!--     title = "Comparison of the estimates for the Political Democracy example", -->
-
-<!--     caption = "MCMC conducted using Stan (3 parallel chains, 500 burnin, and 1500 samples)." -->
-
-<!--   ) -->
-
-<!-- cli::cli_h2("Compare timing (seconds)") -->
-
-<!-- list(poldemfit, poldemfit_blav) |> -->
-
-<!--   set_names(c("INLAvaan", "blavaan")) |> -->
-
-<!--   purrr::map_dbl(\(x) x@timing$total)  -->
-
-<!-- ``` -->
-
 ## Citation
 
 To cite package `{INLAvaan}` in publications use:
 
-> Jamil, H (2026). *INLAvaan: Bayesian structural equation modelling
-> with INLA*. R package version 0.2.1.9006. URL:
-> <https://inlavaan.haziqj.ml/>
+> Jamil, H (2026). *INLAvaan: Approximate Bayesian Latent Variable
+> Analysis*. R package version 0.2.3. DOI:
+> [10.32614/CRAN.package.INLAvaan](https://doi.org/10.32614/CRAN.package.INLAvaan)
 
 A BibTeX entry for LaTeX users is:
 
 ``` bibtex
 @Manual{,
-    title = {INLAvaan: Bayesian structural equation modelling with INLA},
+    title = {INLAvaan: Approximate Bayesian Latent Variable Analysis},
     author = {Haziq Jamil},
     year = {2026},
-    note = {R package version 0.2.1.9006},
+    note = {R package version 0.2.3},
     url = {https://inlavaan.haziqj.ml/},
+    doi = {10.32614/CRAN.package.INLAvaan}
   }
 ```
 
@@ -501,4 +278,4 @@ license for the software and the CC BY 4.0 license for the data.
     (pp. xiv, 514). John Wiley & Sons.
     <https://doi.org/10.1002/9781118619179>
 
-[^2]: R-INLA dependency has been removed temporarily for v0.2-0.
+[^2]: R-INLA dependency has been removed temporarily from v0.2.0.
