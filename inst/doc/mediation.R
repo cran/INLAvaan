@@ -47,7 +47,7 @@ summary(fit)
 
 ## -----------------------------------------------------------------------------
 #| include: false
-summ <- INLAvaan:::get_inlavaan_internal(fit)$summary
+summ <- get_inlavaan_internal(fit)$summary
 fmt <- function(x) sprintf("%.3f", x)
 
 a     <- fmt(summ["a", "Mean"])

@@ -19,24 +19,19 @@ toc: true
 #| include: false
 library(INLAvaan)
 library(lavaan)
-library(dplyr)
 ```
 
 
 ## Introduction
 
 SEMs are ubiquitous in the social sciences, psychology, ecology, and other fields. 
-The INLAvaan package provides a user-friendly interface for fitting Bayesian SEMs using Integrated Nested Laplace Approximations [INLA, @rue2009approximate]. 
-This vignette will guide you through the basics of using INLAvaan to fit a simple SEM.
+The `{INLAvaan}` package [@jamil2026implementation] provides a user-friendly interface for fitting Bayesian SEMs using Integrated Nested Laplace Approximations [INLA, @rue2009approximate], based on a bespoke approximate Bayesian inference framework for SEMs [@jamil2026approximate].
+This vignette will guide you through the basics of using `{INLAvaan}` to fit a simple SEM.
 Before we begin make sure you have installed the INLAvaan package from GitHub by running the commands below.
 
 ```{r}
 #| label: install-instructions
 #| eval: false
-# Run this if you have not yet installed INLAvaan
-install.packages("pak")
-pak::pak("haziqj/INLAvaan")
-
 # Load all libraries for this example
 library(INLAvaan)
 library(tidyverse)
@@ -50,7 +45,14 @@ To motivate the use of SEMs, consider the introductory example in @song2012basic
 *Does poorer glycemic control lead to greater severity of kidney disease?*
 We observe three indicators of glycemic control ($y_1$, $y_2$, $y_3$) and three indicators of kidney disease severity ($y_4$, $y_5$, $y_6$).
 
-![](glycemic-table.png){fig-align="center" width="75%"}
+| | **Indicator** | **Description** | **Unit** |
+|---|---|---|---|
+| $y_1$ | HbA1c | 3-month avg. blood glucose | % |
+| $y_2$ | FPG | Fasting plasma glucose | mmol/L |
+| $y_3$ | Insulin | Fasting insulin level | μU/mL |
+| $y_4$ | PCr | Plasma creatinine | μmol/L |
+| $y_5$ | ACR | Albumin–creatinine ratio | mg/g |
+| $y_6$ | BUN | Blood urea nitrogen | mmol/L |
 
 Rather than fitting separate regression models for each indicator, SEM allows us to model the relationship between the latent constructs themselves, providing a clearer and more coherent representation of the underlying processes.
 The hypothesised SEM is illustrated by the figure below:
@@ -81,7 +83,7 @@ pop_mod <- "
 "
 set.seed(123)
 dat <- lavaan::simulateData(pop_mod, sample.nobs = 1000)
-glimpse(dat)
+str(dat)
 ```
 
 From the code above, note the true values of the parameters, including the factor loadings $\Lambda$, regression coefficient $\beta$ between the two latent variables, as well as the residual and latent variances $\Theta$ and $\Psi$ respectively.
@@ -109,7 +111,7 @@ mod <- "
 fit <- asem(mod, dat)
 ```
 
-`{INLAvaan}` computes an approximation to the posterior density by way of a Laplace approximation [@tierney1989fully].
+`{INLAvaan}` computes an approximation to the posterior density by way of a Laplace approximation [@tierney1989fully; @jamil2026approximate].
 The joint mode and the Hessian needs to be computed, which gives a Gaussian distribution for the joint posterior of the parameters.
 The default method for optimisation is `stats::nlminb()`, but other optimisers can be used by specifying `optim_method = "ucminf"` for the `{ucminf}` package or `optim_method = "optim"` to call the `stats::optim()` function with method `"BFGS"`.
 
@@ -147,7 +149,7 @@ It's possible to request posterior medians and modes in the summary output by sp
 
 Predicted values for the latent variables can be obtained using the `predict()` function.
 This is done by sampling from the posterior distributions of the latent variables given the observed data.
-In the future, this function will also allow for out-of-sample predictions and also to retrieve predictions for observed variables.
+The function also supports predictions for observed variables (e.g. `type = "ov"`) and missing data imputation, respecting multilevel structure if present.
 
 ```{r}
 #| label: results-pred
@@ -164,6 +166,24 @@ Alternatively, the user is welcome to perform their own summary statistics on th
 summ_eta <- summary(eta_preds)
 str(summ_eta)
 head(summ_eta$Mean)
+```
+
+### Diagnostics
+
+The `diagnostics()` function reports convergence and approximation-quality metrics for the fitted model.
+Global diagnostics (`type = "global"`) check whether the optimiser converged, and quantify how well the skew-normal marginals match the joint posterior (via KL divergence and NMAD).
+Per-parameter diagnostics (`type = "param"`) provide gradient norms and KL contributions for each free parameter, which is useful for identifying any problematic parameters.
+
+```{r}
+#| label: results-diagnostics
+diagnostics(fit)
+```
+
+The `timing()` function reports how long each computation stage took, which can help identify bottlenecks when scaling to larger models.
+
+```{r}
+#| label: results-timing
+timing(fit)
 ```
 
 ### Plot
@@ -193,12 +213,12 @@ compare(fit, fit2)
 ```
 
 As a note, there have been several criticisms of the use of Bayes factors for model comparison, particularly in the context of SEMs [@tendeiro2019review; @schad2023workflow].
-The `{blavaan}` package is able to implement [WAICs and LOOs](https://ecmerkle.github.io/blavaan/articles/model_comparison.html) as alternative model comparison metrics, and these will hopefully also be implemented in future versions of `{INLAvaan}`.
+The `{blavaan}` package is able to implement [WAICs and LOOs](https://blavaan.org/articles/model_comparison.html) as alternative model comparison metrics, and these will hopefully also be implemented in future versions of `{INLAvaan}`.
 
 
 ## Setting priors
 
-The `{INLAvaan}` package uses the same prior specification syntax as `{blavaan}` [@merkle2018blavaan;@merkle2021efficient], as detailed [here](https://ecmerkle.github.io/blavaan/articles/prior.html).
+The `{INLAvaan}` package uses the same prior specification syntax as `{blavaan}` [@merkle2018blavaan;@merkle2021efficient], as detailed [here](https://blavaan.org/articles/prior.html).
 Essentially, there are two ways to set priors for model parameters:
 1) Globally for all parameters of a certain type (e.g., all factor loadings, all regression coefficients, etc.); and
 2) Individually for specific parameters in the model syntax.
@@ -207,15 +227,15 @@ The default global priors are derived from `{blavaan}`:
 
 ```{r}
 #| label: priors-default
-blavaan::dpriors()
+priors_for()  # similar to blavaan::dpriors()
 ```
 
-Note that, `{INLAvaan}` uses the SRS decomposition on variance matrices, and consequently places priors on **correlations** instead of *covariances*.
-If, instead we wished to set global priors, say a Gamma distribution on **variances** instead of **standard deviations** (default), then we would do the following:
+Note that, `{INLAvaan}` uses the separation strategy for variance matrices, and consequently places priors on **correlations** instead of *covariances*.
+If, instead we wished to set global priors, say a gamma distribution on **variances** instead of **standard deviations** (default), then we would do the following:
 
 ```{r}
 #| label: priors-global
-DP <- blavaan::dpriors(theta = "gamma(1,1)", psi = "gamma(1,1)")
+DP <- priors_for(theta = "gamma(1,1)", psi = "gamma(1,1)")
 DP
 ## fit <- asem(mod, dat, dpriors = DP)  # not run
 ```
@@ -234,7 +254,7 @@ mod <- "
 
 ## Dependency on R-INLA
 
-Dependency on R-INLA has been temporarily removed for tThe current version of `{INLAvaan}` (v0.2-0).
+Dependency on R-INLA has been temporarily removed for the current version of `{INLAvaan}` (>= 0.2.0).
 For a wide class LVMs and SEMs where the latent variables are unstructured and independent, the current implementation is sufficient.
 However, future versions of `{INLAvaan}` will re-introduce dependency on R-INLA to allow for more complex latent structures, such as spatial and temporal dependencies.
 

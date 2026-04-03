@@ -40,35 +40,35 @@ test_that("as_fun_string flattens functions to single string", {
   expect_match(res, "x\\^2 \\+ 1")
 })
 
-test_that("check_mat identifies problematic matrices", {
+test_that("is_bad_cov identifies problematic matrices", {
   # 1. Positive Definite (Good) -> Should return FALSE
   mat_pd <- matrix(c(2, 0.5, 0.5, 2), 2, 2)
-  expect_false(check_mat(mat_pd))
+  expect_false(is_bad_cov(mat_pd))
 
   # 2. Negative Definite (Bad) -> Should return TRUE
   mat_nd <- matrix(c(-2, 0.5, 0.5, -2), 2, 2)
-  expect_true(check_mat(mat_nd))
+  expect_true(is_bad_cov(mat_nd))
 
   # 3. NA/Inf/NaN (Bad) -> Should return TRUE
   mat_na <- mat_pd
   mat_na[1, 1] <- NA
-  expect_true(check_mat(mat_na))
+  expect_true(is_bad_cov(mat_na))
 
   mat_inf <- mat_pd
   mat_inf[1, 1] <- Inf
-  expect_true(check_mat(mat_inf))
+  expect_true(is_bad_cov(mat_inf))
 })
 
-test_that("force_pd corrects non-PD matrices", {
+test_that("make_pd corrects non-PD matrices", {
   # Case 1: Already PD -> Should remain unchanged
   mat_pd <- matrix(c(2, 1, 1, 2), 2, 2)
-  expect_equal(force_pd(mat_pd), mat_pd)
+  expect_equal(make_pd(mat_pd), mat_pd)
 
   # Case 2: Non-PD -> Should become PD
   # Create a matrix with negative eigenvalues
   mat_bad <- matrix(c(1, 2, 2, 1), 2, 2) # Eigenvalues: 3, -1
 
-  mat_fixed <- force_pd(mat_bad)
+  mat_fixed <- make_pd(mat_bad)
 
   # Check that it is now PD (all eigenvalues > 0)
   eigs <- eigen(mat_fixed)$values
@@ -76,4 +76,25 @@ test_that("force_pd corrects non-PD matrices", {
 
   # Check that it is still symmetric
   expect_true(isSymmetric(mat_fixed))
+})
+
+test_that("is_lavaan / is_blavaan identify objects correctly", {
+  mod <- "visual =~ x1 + x2 + x3"
+  dat <- lavaan::HolzingerSwineford1939
+  lav_fit <- lavaan::cfa(mod, dat)
+
+  expect_true(is_lavaan(lav_fit))
+  expect_false(isTRUE(is_lavaan(list())))
+  expect_false(is_blavaan(lav_fit))
+})
+
+test_that("dmode handles edge cases", {
+  expect_true(is.na(dmode(numeric(0))))
+  expect_equal(dmode(42), 42)
+  # Constant vector: returns mean
+  expect_equal(dmode(rep(5, 10)), 5)
+})
+
+test_that("get_inlavaan_internal errors for non-INLAvaan", {
+  expect_error(get_inlavaan_internal(list()), "Object must be of class")
 })

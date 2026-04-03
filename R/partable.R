@@ -140,7 +140,7 @@ partable_transform_funcs <- function(matrix) {
 
 inlavaanify_partable <- function(
   pt,
-  dp = blavaan::dpriors(),
+  dp = priors_for(),
   lavdata,
   lavoptions
 ) {
@@ -216,6 +216,8 @@ inlavaanify_partable <- function(
     pt$names <- paste0(pt$names, prefix, pt$group)
     pt$names <- gsub(".g1|.l1", "", pt$names)
   }
+  # Remove .l0 from names of defined params
+  pt$names[pt$op == ":="] <- gsub(".l0", "", pt$names[pt$op == ":="])
 
   # Remove pt$group if multilevel (interacts with lav_partable_labels())
   if (is_multilvl) {

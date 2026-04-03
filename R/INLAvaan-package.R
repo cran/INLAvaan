@@ -10,6 +10,15 @@
 #' * Defined parameters (e.g., `:=` operator for indirect effects)
 #' * Flexible prior specifications
 #'
+#' @section Methods for \code{INLAvaan} objects:
+#' After fitting a model an [INLAvaan] object is returned. The following S4
+#' methods are available. See [INLAvaan-class] for the class definition.
+#'
+#' * Summaries and parameter estimates: [summary()], [coef()], [vcov()], [standardisedsolution()]
+#' * Fit assessment and model comparison: [fitmeasures()], [bfit_indices()], [compare()], [diagnostics()], [timing()]
+#' * Posterior inference and simulation: [predict()], [sampling()], [simulate()]
+#' * Visualisation: [plot()]
+
 #' @section Online vignettes:
 #' The [package website](https://inlavaan.haziqj.ml/) contains comprehensive examples covering:
 #' * Confirmatory Factor Analysis (CFA)
@@ -22,28 +31,39 @@
 "_PACKAGE"
 
 ## usethis namespace: start
-#' @import ggplot2
 #' @import methods
-#' @importFrom blavaan dpriors
-#' @importFrom blavaan standardizedPosterior
 #' @importFrom cli cli_abort
 #' @importFrom cli cli_alert_info
-#' @importFrom dplyr filter
-#' @importFrom dplyr group_by
-#' @importFrom dplyr mutate
-#' @importFrom dplyr recode
-#' @importFrom dplyr select
-#' @importFrom dplyr ungroup
-#' @importFrom modeest mfv1
-#' @importFrom qrng sobol
-#' @importFrom statmod gauss.quad
+#' @importFrom cli cli_alert_warning
+#' @importFrom cli cli_inform
+#' @importFrom cli cli_progress_bar
+#' @importFrom cli cli_progress_done
+#' @importFrom cli cli_progress_step
+#' @importFrom cli cli_progress_update
+#' @importFrom cli cli_rule
+#' @importFrom cli cli_warn
+#' @importFrom cli col_grey
+#' @importFrom cli symbol
+#' @importFrom graphics abline
+#' @importFrom graphics barplot
+#' @importFrom graphics grid
+#' @importFrom graphics layout
+#' @importFrom graphics legend
+#' @importFrom graphics lines
+#' @importFrom graphics mtext
+#' @importFrom graphics par
+#' @importFrom graphics plot.new
+#' @importFrom graphics polygon
+#' @importFrom grDevices adjustcolor
+#' @importFrom grDevices recordPlot
+#' @importFrom stats aggregate
 #' @importFrom stats approx
+#' @importFrom stats cov
 #' @importFrom stats cov2cor
 #' @importFrom stats dbeta
 #' @importFrom stats density
 #' @importFrom stats dgamma
 #' @importFrom stats dnorm
-#' @importFrom stats dnorm dgamma
 #' @importFrom stats median
 #' @importFrom stats nlminb
 #' @importFrom stats optimize
@@ -51,11 +71,11 @@
 #' @importFrom stats qnorm
 #' @importFrom stats quantile
 #' @importFrom stats reshape
+#' @importFrom stats rnorm
 #' @importFrom stats sd
 #' @importFrom stats setNames
 #' @importFrom stats splinefun
 #' @importFrom stats uniroot
-#' @importFrom tidyr %>% pivot_longer
 #' @importFrom utils capture.output
 #' @importFrom utils getFromNamespace
 #' @importFrom utils head

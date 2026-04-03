@@ -11,7 +11,11 @@ experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](h
 [![Codecov test
 coverage](https://codecov.io/gh/haziqj/INLAvaan/branch/main/graph/badge.svg)](https://app.codecov.io/gh/haziqj/INLAvaan?branch=main)
 [![CRAN_Status_Badge_version_ago](http://www.r-pkg.org/badges/version-ago/INLAvaan)](https://cran.r-project.org/package=INLAvaan)
-[![](http://cranlogs.r-pkg.org/badges/grand-total/INLAvaan)](https://cran.r-project.org/package=INLAvaan)
+[![Dependencies](https://tinyverse.netlify.app/badge/INLAvaan)](https://cran.r-project.org/package=INLAvaan)
+[![CRAN
+Downloads](http://cranlogs.r-pkg.org/badges/grand-total/INLAvaan)](https://cran.r-project.org/package=INLAvaan)
+[![GitHub Repo
+stars](https://img.shields.io/github/stars/haziqj/inlavaan)](https://github.com/haziqj/INLAvaan/stargazers)
 <!-- badges: end -->
 
 > Efficient approximate Bayesian inference for Structural Equation
@@ -40,7 +44,7 @@ Bollen (1989)[^1]:
 
 ``` r
 library(INLAvaan)
-model <- "
+mod_poldem <- "
   # Latent variable definitions
      ind60 =~ x1 + x2 + x3
      dem60 =~ y1 + y2 + y3
@@ -67,32 +71,33 @@ model <- "
 "
 utils::data("PoliticalDemocracy", package = "lavaan")
 
-fit <- asem(model, PoliticalDemocracy)
+fit <- asem(model = mod_poldem, data = PoliticalDemocracy)
 #> ℹ Finding posterior mode.
-#> ✔ Finding posterior mode. [35ms]
+#> ✔ Finding posterior mode. [37ms]
 #> 
 #> ℹ Computing the Hessian.
-#> ✔ Computing the Hessian. [92ms]
+#> ✔ Computing the Hessian. [32ms]
 #> 
 #> ℹ Performing VB correction.
-#> ✔ VB correction; mean |δ| = 0.035σ. [84ms]
+#> ✔ VB correction; mean |δ| = 0.156σ. [89ms]
 #> 
-#> ⠙ Fitting skew normal to 0/30 marginals.
-#> ⠹ Fitting skew normal to 6/30 marginals.
-#> ⠸ Fitting skew normal to 18/30 marginals.
-#> ⠼ Fitting skew normal to 29/30 marginals.
-#> ✔ Fitting skew normal to 30/30 marginals. [549ms]
+#> ⠙ Fitting 0/30 skew-normal marginals.
+#> ⠹ Fitting 2/30 skew-normal marginals.
+#> ⠸ Fitting 15/30 skew-normal marginals.
+#> ⠼ Fitting 28/30 skew-normal marginals.
+#> ✔ Fitting 30/30 skew-normal marginals. [462ms]
 #> 
-#> ℹ Sampling covariances and defined parameters.
-#> ✔ Sampling covariances and defined parameters. [59ms]
+#> ℹ Adjusting copula correlations (NORTA).
+#> ✔ Adjusting copula correlations (NORTA). [101ms]
 #> 
-#> ⠙ Computing ppp and DIC.
-#> ⠹ Computing ppp and DIC.
-#> ✔ Computing ppp and DIC. [192ms]
+#> ⠙ Posterior sampling and summarising.
+#> ⠹ Posterior sampling and summarising.
+#> ⠸ Posterior sampling and summarising.
+#> ✔ Posterior sampling and summarising. [284ms]
 #> 
 
 summary(fit)
-#> INLAvaan 0.2.3 ended normally after 80 iterations
+#> INLAvaan 0.2.4 ended normally after 80 iterations
 #> 
 #>   Estimator                                      BAYES
 #>   Optimization method                           NLMINB
@@ -102,13 +107,13 @@ summary(fit)
 #> 
 #> Model Test (User Model):
 #> 
-#>    Marginal log-likelihood                   -1651.231 
-#>    PPP (Chi-square)                              0.170 
+#>    Marginal log-likelihood                   -1651.234 
+#>    PPP (Chi-square)                              0.514 
 #> 
 #> Information Criteria:
 #> 
-#>    Deviance (DIC)                             3214.887 
-#>    Effective parameters (pD)                    58.157 
+#>    Deviance (DIC)                             3156.401 
+#>    Effective parameters (pD)                    28.794 
 #> 
 #> Parameter Estimates:
 #> 
@@ -119,58 +124,58 @@ summary(fit)
 #>                    Estimate       SD     2.5%    97.5%     NMAD    Prior       
 #>   ind60 =~                                                                     
 #>     x1                1.000                                                    
-#>     x2                2.213    0.145    1.945    2.515    0.006    normal(0,10)
-#>     x3                1.847    0.156    1.552    2.166    0.006    normal(0,10)
+#>     x2                2.216    0.146    1.950    2.524    0.006    normal(0,10)
+#>     x3                1.838    0.154    1.548    2.154    0.004    normal(0,10)
 #>   dem60 =~                                                                     
 #>     y1                1.000                                                    
-#>     y2                1.443    0.168    1.118    1.777    0.001    normal(0,10)
-#>     y3                1.168    0.155    0.868    1.478    0.001    normal(0,10)
+#>     y2                1.443    0.169    1.117    1.779    0.001    normal(0,10)
+#>     y3                1.168    0.156    0.868    1.478    0.001    normal(0,10)
 #>   dem65 =~                                                                     
 #>     y5                1.000                                                    
-#>     y6                1.260    0.188    0.921    1.659    0.012    normal(0,10)
-#>     y7                1.362    0.175    1.042    1.731    0.022    normal(0,10)
-#>     y8                1.384    0.182    1.056    1.770    0.023    normal(0,10)
+#>     y6                1.260    0.186    0.926    1.656    0.007    normal(0,10)
+#>     y7                1.355    0.173    1.048    1.726    0.008    normal(0,10)
+#>     y8                1.367    0.176    1.056    1.746    0.008    normal(0,10)
 #>   dem60 =~                                                                     
 #>     y4                1.500                                                    
 #> 
 #> Regressions:
 #>                    Estimate       SD     2.5%    97.5%     NMAD    Prior       
 #>   dem60 ~                                                                      
-#>     ind60             1.379    0.348    0.706    2.069    0.001    normal(0,10)
+#>     ind60             1.373    0.347    0.702    2.063    0.001    normal(0,10)
 #>   dem65 ~                                                                      
-#>     ind60             0.524    0.234    0.073    0.991    0.001    normal(0,10)
-#>     dem60             0.885    0.106    0.688    1.103    0.020    normal(0,10)
+#>     ind60             0.516    0.233    0.066    0.982    0.001    normal(0,10)
+#>     dem60             0.882    0.102    0.689    1.090    0.011    normal(0,10)
 #> 
 #> Covariances:
 #>                    Estimate       SD     2.5%    97.5%     NMAD    Prior       
 #>  .y1 ~~                                                                        
-#>    .y5                0.330    0.410    0.132    1.739    0.006       beta(1,1)
+#>    .y5                0.331    0.382    0.146    1.644    0.005       beta(1,1)
 #>  .y2 ~~                                                                        
-#>    .y4                0.216    0.675   -0.134    2.517    0.004       beta(1,1)
-#>    .y6                0.348    0.748    0.851    3.789    0.010       beta(1,1)
+#>    .y4                0.217    0.667   -0.217    2.405    0.004       beta(1,1)
+#>    .y6                0.347    0.728    0.901    3.758    0.011       beta(1,1)
 #>  .y3 ~~                                                                        
-#>    .y7                0.224    0.658   -0.207    2.378    0.005       beta(1,1)
+#>    .y7                0.225    0.651   -0.136    2.420    0.005       beta(1,1)
 #>  .y8 ~~                                                                        
-#>    .y4                0.069    0.448   -0.538    1.218    0.004       beta(1,1)
+#>    .y4                0.070    0.454   -0.579    1.206    0.003       beta(1,1)
 #>  .y6 ~~                                                                        
-#>    .y8                0.309    0.579    0.252    2.520    0.005       beta(1,1)
+#>    .y8                0.307    0.583    0.231    2.519    0.005       beta(1,1)
 #> 
 #> Variances:
 #>                    Estimate       SD     2.5%    97.5%     NMAD    Prior       
-#>     ind60             0.455    0.089    0.308    0.654    0.003      gamma(1,1)
-#>    .dem60             3.121    0.602    2.109    4.458    0.000      gamma(2,1)
-#>    .dem65             0.340    0.196    4.237    0.059    0.043     gamma(1,.5)
-#>    .x1                0.088    0.021    0.196    0.053    0.007 gamma(1,.5)[sd]
-#>    .x2                0.124    0.065    1.503    0.019    0.040 gamma(1,.5)[sd]
-#>    .x3                0.500    0.098    0.337    0.718    0.003 gamma(1,.5)[sd]
-#>    .y1                2.311    0.490    3.406    1.495    0.004 gamma(1,.5)[sd]
-#>    .y2                7.504    1.414   10.634    5.114    0.003 gamma(1,.5)[sd]
-#>    .y3                5.500    1.063    3.733    7.883    0.002 gamma(1,.5)[sd]
-#>    .y5                2.627    0.541    3.836    1.724    0.005 gamma(1,.5)[sd]
-#>    .y6                5.132    0.947    3.529    7.227    0.003 gamma(1,.5)[sd]
-#>    .y7                3.610    0.771    5.332    2.324    0.008 gamma(1,.5)[sd]
-#>    .y8                3.210    0.718    4.794    1.988    0.006 gamma(1,.5)[sd]
-#>    .y4                2.872    0.747    7.211    1.607    0.009 gamma(1,.5)[sd]
+#>     ind60             0.458    0.089    0.311    0.657    0.003      gamma(1,1)
+#>    .dem60             3.132    0.604    2.116    4.475    0.001      gamma(2,1)
+#>    .dem65             0.325    0.190    0.058    0.771    0.037     gamma(1,.5)
+#>    .x1                0.088    0.021    0.053    0.135    0.006 gamma(1,.5)[sd]
+#>    .x2                0.131    0.066    0.031    0.279    0.031 gamma(1,.5)[sd]
+#>    .x3                0.501    0.099    0.338    0.723    0.003 gamma(1,.5)[sd]
+#>    .y1                2.321    0.496    1.496    3.430    0.004 gamma(1,.5)[sd]
+#>    .y2                7.547    1.432    5.131   10.720    0.003 gamma(1,.5)[sd]
+#>    .y3                5.518    1.071    3.739    7.922    0.002 gamma(1,.5)[sd]
+#>    .y5                2.639    0.550    1.725    3.869    0.005 gamma(1,.5)[sd]
+#>    .y6                5.158    0.957    3.542    7.279    0.002 gamma(1,.5)[sd]
+#>    .y7                3.627    0.784    2.312    5.374    0.006 gamma(1,.5)[sd]
+#>    .y8                3.247    0.731    1.997    4.852    0.007 gamma(1,.5)[sd]
+#>    .y4                2.910    0.761    1.613    4.580    0.011 gamma(1,.5)[sd]
 ```
 
 ## Validation against MCMC
@@ -190,7 +195,7 @@ distributions.
 ``` r
 # install.packages("blavaan")
 library(blavaan)
-fit_blav <- bsem(model, PoliticalDemocracy)
+fit_blav <- bsem(model = mod_poldem, data = PoliticalDemocracy, seed = 2026)
 res <- INLAvaan:::compare_mcmc(fit_blav, INLAvaan = fit)
 print(res$p_compare)
 ```
@@ -229,24 +234,52 @@ install.packages(
 
 ## Citation
 
-To cite package `{INLAvaan}` in publications use:
+There are two papers related to `{INLAvaan}` and its underlying
+methodology. To cite `{INLAvaan}` in publications, consider citing both.
 
-> Jamil, H (2026). *INLAvaan: Approximate Bayesian Latent Variable
-> Analysis*. R package version 0.2.3. DOI:
-> [10.32614/CRAN.package.INLAvaan](https://doi.org/10.32614/CRAN.package.INLAvaan)
+To cite the methodological contribution exclusively, please cite:
 
-A BibTeX entry for LaTeX users is:
+> Jamil, H., & Rue, H. (2026). *Approximate Bayesian inference for
+> structural equation models using integrated nested Laplace
+> approximations* (2603.25690 \[stat.ME\]). arXiv.
+> <https://doi.org/10.48550/arXiv.2603.25690>
 
-``` bibtex
-@Manual{,
-    title = {INLAvaan: Approximate Bayesian Latent Variable Analysis},
-    author = {Haziq Jamil},
-    year = {2026},
-    note = {R package version 0.2.3},
-    url = {https://inlavaan.haziqj.ml/},
-    doi = {10.32614/CRAN.package.INLAvaan}
-  }
-```
+To cite the software implementation and workflows, please cite:
+
+> Jamil, H., & Rue, H. (2026). *Implementation and workflows for
+> INLA-based approximate Bayesian structural equation modelling*
+> (2604.00671 \[stat.CO\]). arXiv.
+> <https://doi.org/10.48550/arXiv.2604.00671>
+
+BibTeX entries for LaTeX users:
+
+    @Misc{jamil2026approximate,
+      title = {Approximate Bayesian inference for structural equation models using integrated nested Laplace approximations},
+      author = {Haziq Jamil and Håvard Rue},
+      year = {2026},
+      number = {2603.25690 [stat.ME]},
+      eprint = {2603.25690},
+      primaryclass = {stat.ME},
+      publisher = {arXiv},
+      doi = {10.48550/arXiv.2603.25690},
+      abstract = {Markov chain Monte Carlo (MCMC) methods remain the mainstay of Bayesian estimation of structural equation models (SEM); however they often incur a high computational cost. We present a bespoke approximate Bayesian approach to SEM, drawing on ideas from the integrated nested Laplace approximation (INLA; Rue et al., 2009, J. R. Stat. Soc. Series B Stat. Methodol.) framework. We implement a simplified Laplace approximation that efficiently profiles the posterior density in each parameter direction while correcting for asymmetry, allowing for parametric skew-normal estimation of the marginals. Furthermore, we apply a variational Bayes correction to shift the marginal locations, thereby better capturing the posterior mass. Essential quantities, including factor scores and model-fit indices, are obtained via an adjusted Gaussian copula sampling scheme. For normal-theory SEM, this approach offers a highly accurate alternative to sampling-based inference, achieving near-'maximum likelihood' speeds while retaining the precision of full Bayesian inference.},
+      archiveprefix = {arXiv},
+      copyright = {Creative Commons Attribution Non Commercial Share Alike 4.0 International},
+    }
+
+    @Misc{jamil2026implementation,
+      title = {Implementation and workflows for INLA-based approximate Bayesian structural equation modelling},
+      author = {Haziq Jamil and Håvard Rue},
+      year = {2026},
+      number = {2604.00671 [stat.CO]},
+      eprint = {2604.00671},
+      primaryclass = {stat.CO},
+      publisher = {arXiv},
+      doi = {10.48550/arXiv.2604.00671},
+      abstract = {Bayesian structural equation modelling (BSEM) offers many advantages such as principled uncertainty quantification, small-sample regularisation, and flexible model specification. However, the Markov chain Monte Carlo (MCMC) methods on which it relies are computationally prohibitive for the iterative cycle of specification, criticism, and refinement that careful psychometric practice demands. We present INLAvaan, an R package for fast, approximate Bayesian SEM built around the Integrated Nested Laplace Approximation (INLA) framework for structural equation models developed by Jamil & Rue (2026, arXiv:2603.25690 [stat.ME]). This paper serves as a companion manuscript that describes the architectural decisions and computational strategies underlying the package. Two substantive applications -- a 256-parameter bifactor circumplex model and a multilevel mediation model with full-information missing-data handling -- demonstrate the approach on specifications where MCMC would require hours of run time and careful convergence work. In constrast, INLAvaan delivers calibrated posterior summaries in seconds.},
+      archiveprefix = {arXiv},
+      copyright = {Creative Commons Attribution Non Commercial Share Alike 4.0 International},
+    }
 
 ## License
 
@@ -271,8 +304,9 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ```
 
-By using this package, you agree to comply with both licenses: the GPL-3
-license for the software and the CC BY 4.0 license for the data.
+<!-- By using this package, you agree to comply with both licenses:  -->
+
+<!-- the GPL-3 license for the software and the CC BY 4.0 license for the data. -->
 
 [^1]: Bollen, K. A. (1989). *Structural equations with latent variables*
     (pp. xiv, 514). John Wiley & Sons.

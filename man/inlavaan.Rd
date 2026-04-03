@@ -8,20 +8,24 @@ inlavaan(
   model,
   data,
   model.type = "sem",
-  dp = blavaan::dpriors(),
+  dp = priors_for(),
+  test = "standard",
   vb_correction = TRUE,
   marginal_method = c("skewnorm", "asymgaus", "marggaus", "sampling"),
-  marginal_correction = c("shortcut", "hessian", "none"),
-  nsamp = 500,
-  test = "standard",
+  marginal_correction = c("shortcut", "shortcut_fd", "hessian", "none"),
+  nsamp = 1000,
+  samp_copula = TRUE,
+  sn_fit_ngrid = 21,
   sn_fit_logthresh = -6,
-  sn_fit_temp = NA,
+  sn_fit_temp = 1,
+  sn_fit_sample = TRUE,
   control = list(),
   verbose = TRUE,
   debug = FALSE,
   add_priors = TRUE,
   optim_method = c("nlminb", "ucminf", "optim"),
   numerical_grad = FALSE,
+  cores = NULL,
   ...
 )
 }
@@ -46,33 +50,51 @@ inlavaan(
     parameters, typically the result of a call to \code{dpriors()}.
     See the \code{dpriors()} help file for more information.}
 
+\item{test}{Character indicating whether to compute posterior fit indices.
+Defaults to "standard". Change to "none" to skip these computations.}
+
 \item{vb_correction}{Logical indicating whether to apply a variational Bayes
 correction for the posterior mean vector of estimates. Defaults to \code{TRUE}.}
 
 \item{marginal_method}{The method for approximating the marginal posterior
-distributions. Options include \code{"skewnorm"} (skew normal), \code{"asymgaus"}
+distributions. Options include \code{"skewnorm"} (skew-normal), \code{"asymgaus"}
 (two-piece asymmetric Gaussian), \code{"marggaus"} (marginalising the Laplace
 approximation), and \code{"sampling"} (sampling from the joint Laplace
 approximation).}
 
 \item{marginal_correction}{Which type of correction to use when fitting the
-skew normal or two-piece Gaussian marginals. \code{"hessian"} computes the full
-Hessian-based correction (slow), \code{"shortcut"} (default) computes only
-diagonals, and \code{"none"} (or \code{FALSE}) applies no correction.}
+skew-normal or two-piece Gaussian marginals. \code{"hessian"} computes the full
+\code{"shortcut"} (default) computes only diagonals via central differences
+(full z-trace plus Schur complement correction), \code{"shortcut_fd"} is the
+same formula using forward differences (roughly half the cost, less
+accurate), \code{"hessian"} computes the full Hessian-based correction (slow),
+and \code{"none"} (or \code{FALSE}) applies no correction.}
 
 \item{nsamp}{The number of samples to draw for all sampling-based approaches
 (including posterior sampling for model fit indices).}
 
-\item{test}{Character indicating whether to compute posterior fit indices.
-Defaults to "standard". Change to "none" to skip these computations.}
+\item{samp_copula}{Logical. When \code{TRUE} (default), posterior samples are
+drawn using the copula method with the fitted marginals (e.g.
+skew-normal or asymmetric Gaussian), with NORTA correlation adjustment.
+When \code{FALSE}, samples are drawn from the Gaussian (Laplace)
+approximation. Only re}
 
-\item{sn_fit_logthresh}{The log-threshold for fitting the skew normal. Points
+\item{sn_fit_ngrid}{Number of grid points to lay out per dimension when
+fitting the skew-normal marginals. A finer grid gives a better fit at the
+cost of more joint-log-posterior evaluations. Defaults to \code{21}.}
+
+\item{sn_fit_logthresh}{The log-threshold for fitting the skew-normal. Points
 with log-posterior drop below this threshold (relative to the maximum) will
 be excluded from the fit. Defaults to \code{-6}.}
 
-\item{sn_fit_temp}{Temperature parameter for fitting the skew normal. If
-\code{NA}, the temperature will be included in the optimisation during the skew
-normal fit.}
+\item{sn_fit_temp}{Temperature parameter for fitting the skew-normal.
+Defaults to \code{1} (weights are the density values themselves). If
+\code{NA}, the temperature is included as an additional optimisation parameter.}
+
+\item{sn_fit_sample}{Logical. When \code{TRUE} (default), a parametric
+skew-normal is fitted to the posterior samples for covariance and defined
+parameters. When \code{FALSE}, these are summarised using kernel density
+estimation instead.}
 
 \item{control}{A list of control parameters for the optimiser.}
 
@@ -88,7 +110,15 @@ mode. Options include \code{"nlminb"} (default), \code{"ucminf"}, and \code{"opt
 (BFGS).}
 
 \item{numerical_grad}{Logical indicating whether to use numerical gradients
-for the optimisation.}
+for the optimisation. Defaults to \code{FALSE} to use analytical gradients.}
+
+\item{cores}{Integer or \code{NULL}. Number of cores for parallel marginal
+fitting. When \code{NULL} (default), serial execution is used unless the number
+of free parameters exceeds 120, in which case parallelisation is enabled
+automatically using all available physical cores. Set to \code{1L} to force
+serial execution. If \code{cores > 1}, marginal fits are distributed across
+cores using \code{\link[parallel:mclapply]{parallel::mclapply()}} (fork-based; no parallelism on
+Windows).}
 
 \item{...}{Additional arguments to be passed to the \link[lavaan:lavaan]{lavaan::lavaan} model fitting
 function.}
@@ -100,7 +130,7 @@ An S4 object of class \code{INLAvaan} which is a subclass of the
 \description{
 This function fits a Bayesian latent variable model by approximating the
 posterior distributions of the model parameters using various methods,
-including skew normal, asymmetric Gaussian, marginal Gaussian, or
+including skew-normal, asymmetric Gaussian, marginal Gaussian, or
 sampling-based approaches. It leverages the lavaan package for model
 specification and estimation.
 }

@@ -3,16 +3,11 @@
 #| include: false
 library(INLAvaan)
 library(lavaan)
-library(dplyr)
 
 
 ## -----------------------------------------------------------------------------
 #| label: install-instructions
 #| eval: false
-# # Run this if you have not yet installed INLAvaan
-# install.packages("pak")
-# pak::pak("haziqj/INLAvaan")
-# 
 # # Load all libraries for this example
 # library(INLAvaan)
 # library(tidyverse)
@@ -38,7 +33,7 @@ pop_mod <- "
 "
 set.seed(123)
 dat <- lavaan::simulateData(pop_mod, sample.nobs = 1000)
-glimpse(dat)
+str(dat)
 
 
 ## -----------------------------------------------------------------------------
@@ -81,6 +76,16 @@ head(summ_eta$Mean)
 
 
 ## -----------------------------------------------------------------------------
+#| label: results-diagnostics
+diagnostics(fit)
+
+
+## -----------------------------------------------------------------------------
+#| label: results-timing
+timing(fit)
+
+
+## -----------------------------------------------------------------------------
 #| label: results-plot
 plot(fit)
 
@@ -98,12 +103,12 @@ compare(fit, fit2)
 
 ## -----------------------------------------------------------------------------
 #| label: priors-default
-blavaan::dpriors()
+priors_for()  # similar to blavaan::dpriors()
 
 
 ## -----------------------------------------------------------------------------
 #| label: priors-global
-DP <- blavaan::dpriors(theta = "gamma(1,1)", psi = "gamma(1,1)")
+DP <- priors_for(theta = "gamma(1,1)", psi = "gamma(1,1)")
 DP
 ## fit <- asem(mod, dat, dpriors = DP)  # not run
 

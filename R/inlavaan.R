@@ -2,7 +2,7 @@
 #'
 #' This function fits a Bayesian latent variable model by approximating the
 #' posterior distributions of the model parameters using various methods,
-#' including skew normal, asymmetric Gaussian, marginal Gaussian, or
+#' including skew-normal, asymmetric Gaussian, marginal Gaussian, or
 #' sampling-based approaches. It leverages the lavaan package for model
 #' specification and estimation.
 #'
@@ -10,27 +10,42 @@
 #' @inheritParams lavaan::simulateData
 #' @inheritParams blavaan::blavaan
 #'
+#' @param test Character indicating whether to compute posterior fit indices.
+#'   Defaults to "standard". Change to "none" to skip these computations.
 #' @param vb_correction Logical indicating whether to apply a variational Bayes
 #'   correction for the posterior mean vector of estimates. Defaults to `TRUE`.
 #' @param marginal_method The method for approximating the marginal posterior
-#'   distributions. Options include `"skewnorm"` (skew normal), `"asymgaus"`
+#'   distributions. Options include `"skewnorm"` (skew-normal), `"asymgaus"`
 #'   (two-piece asymmetric Gaussian), `"marggaus"` (marginalising the Laplace
 #'   approximation), and `"sampling"` (sampling from the joint Laplace
 #'   approximation).
 #' @param marginal_correction Which type of correction to use when fitting the
-#'   skew normal or two-piece Gaussian marginals. `"hessian"` computes the full
-#'   Hessian-based correction (slow), `"shortcut"` (default) computes only
-#'   diagonals, and `"none"` (or `FALSE`) applies no correction.
+#'   skew-normal or two-piece Gaussian marginals. `"hessian"` computes the full
+#'   `"shortcut"` (default) computes only diagonals via central differences
+#'   (full z-trace plus Schur complement correction), `"shortcut_fd"` is the
+#'   same formula using forward differences (roughly half the cost, less
+#'   accurate), `"hessian"` computes the full Hessian-based correction (slow),
+#'   and `"none"` (or `FALSE`) applies no correction.
 #' @param nsamp The number of samples to draw for all sampling-based approaches
 #'   (including posterior sampling for model fit indices).
-#' @param test Character indicating whether to compute posterior fit indices.
-#'   Defaults to "standard". Change to "none" to skip these computations.
-#' @param sn_fit_logthresh The log-threshold for fitting the skew normal. Points
+#' @param samp_copula Logical. When `TRUE` (default), posterior samples are
+#'   drawn using the copula method with the fitted marginals (e.g.
+#'   skew-normal or asymmetric Gaussian), with NORTA correlation adjustment.
+#'   When `FALSE`, samples are drawn from the Gaussian (Laplace)
+#'   approximation. Only re
+#' @param sn_fit_ngrid Number of grid points to lay out per dimension when
+#'   fitting the skew-normal marginals. A finer grid gives a better fit at the
+#'   cost of more joint-log-posterior evaluations. Defaults to `21`.
+#' @param sn_fit_logthresh The log-threshold for fitting the skew-normal. Points
 #'   with log-posterior drop below this threshold (relative to the maximum) will
 #'   be excluded from the fit. Defaults to `-6`.
-#' @param sn_fit_temp Temperature parameter for fitting the skew normal. If
-#'   `NA`, the temperature will be included in the optimisation during the skew
-#'   normal fit.
+#' @param sn_fit_temp Temperature parameter for fitting the skew-normal.
+#'   Defaults to `1` (weights are the density values themselves). If
+#'   `NA`, the temperature is included as an additional optimisation parameter.
+#' @param sn_fit_sample Logical. When `TRUE` (default), a parametric
+#'   skew-normal is fitted to the posterior samples for covariance and defined
+#'   parameters. When `FALSE`, these are summarised using kernel density
+#'   estimation instead.
 #' @param control A list of control parameters for the optimiser.
 #' @param verbose Logical indicating whether to print progress messages.
 #' @param debug Logical indicating whether to return debug information.
@@ -40,7 +55,14 @@
 #'   mode. Options include `"nlminb"` (default), `"ucminf"`, and `"optim"`
 #'   (BFGS).
 #' @param numerical_grad Logical indicating whether to use numerical gradients
-#'   for the optimisation.
+#'   for the optimisation. Defaults to `FALSE` to use analytical gradients.
+#' @param cores Integer or `NULL`. Number of cores for parallel marginal
+#'   fitting. When `NULL` (default), serial execution is used unless the number
+#'   of free parameters exceeds 120, in which case parallelisation is enabled
+#'   automatically using all available physical cores. Set to `1L` to force
+#'   serial execution. If `cores > 1`, marginal fits are distributed across
+#'   cores using [parallel::mclapply()] (fork-based; no parallelism on
+#'   Windows).
 #' @param ... Additional arguments to be passed to the [lavaan] model fitting
 #'   function.
 #'
@@ -56,26 +78,34 @@ inlavaan <- function(
   model,
   data,
   model.type = "sem",
-  dp = blavaan::dpriors(),
+  dp = priors_for(),
+  test = "standard",
   vb_correction = TRUE,
   marginal_method = c("skewnorm", "asymgaus", "marggaus", "sampling"),
-  marginal_correction = c("shortcut", "hessian", "none"),
-  nsamp = 500,
-  test = "standard",
+  marginal_correction = c("shortcut", "shortcut_fd", "hessian", "none"),
+  nsamp = 1000,
+  samp_copula = TRUE,
+  sn_fit_ngrid = 21,
   sn_fit_logthresh = -6,
-  sn_fit_temp = NA,
+  sn_fit_temp = 1,
+  sn_fit_sample = TRUE,
   control = list(),
   verbose = TRUE,
   debug = FALSE,
   add_priors = TRUE,
   optim_method = c("nlminb", "ucminf", "optim"),
   numerical_grad = FALSE,
+  cores = NULL,
   ...
 ) {
   start.time0 <- proc.time()[3]
   timing <- list(start.time = start.time0)
 
   ## ----- Check arguments -----------------------------------------------------
+  if (!is.null(cores)) { # nocov start
+    cores <- as.integer(cores)
+    if (is.na(cores) || cores < 1L) cores <- 1L
+  } # nocov end
   marginal_method <- match.arg(marginal_method)
   if (isFALSE(marginal_correction)) {
     marginal_correction <- "none"
@@ -96,8 +126,8 @@ inlavaan <- function(
   lavargs$test <- test
 
   if ("estimator" %in% names(lavargs)) {
-    if (!(lavargs$estimator %in% c("ML", "PML"))) {
-      cli::cli_abort("Only 'ML' and 'PML' estimators are supported currently.")
+    if (!(lavargs$estimator %in% c("ML", "PML"))) { # nocov
+      cli_abort("Only 'ML' and 'PML' estimators are supported currently.")
     }
   }
 
@@ -210,7 +240,7 @@ inlavaan <- function(
 
   ## ----- Start optimisation --------------------------------------------------
   if (isTRUE(verbose)) {
-    cli::cli_progress_step("Finding posterior mode.")
+    cli_progress_step("Finding posterior mode.")
   }
 
   ob <- function(x) -1 * joint_lp(x)
@@ -226,18 +256,21 @@ inlavaan <- function(
     )
     theta_star <- opt$par
     if (isTRUE(verbose)) {
-      cli::cli_progress_step("Computing the Hessian.")
+      cli_progress_step("Computing the Hessian.")
     }
     if (isTRUE(numerical_grad)) {
-      H_neg <- numDeriv::hessian(
-        func = ob,
-        x = theta_star,
-        method.args = list(eps = 1e-4, d = 0.0005) # high stability
-      )
+      H_neg <- fast_hessian(ob, theta_star)
     } else {
-      H_neg <- numDeriv::jacobian(function(x) -1 * joint_lp_grad(x), theta_star)
+      # H_neg <- numDeriv::jacobian(function(x) -1 * joint_lp_grad(x), theta_star)
+      H_neg <- fast_jacobian(function(x) -1 * joint_lp_grad(x), theta_star)
     }
-  } else if (optim_method == "ucminf") {
+  } else if (optim_method == "ucminf") { # nocov start
+    if (!requireNamespace("ucminf", quietly = TRUE)) {
+      cli_abort(
+        "The `ucminf` package is required for this optimization method. Please install it using `install.packages('ucminf')`."
+      )
+    }
+
     opt <- ucminf::ucminf(
       par = parstart,
       fn = ob,
@@ -247,7 +280,7 @@ inlavaan <- function(
     )
     theta_star <- opt$par
     H_neg <- opt$hessian
-  } else {
+  } else { # nocov end
     opt <- stats::optim(
       par = parstart,
       fn = ob,
@@ -259,40 +292,54 @@ inlavaan <- function(
     theta_star <- opt$par
     H_neg <- opt$hessian
   }
-  Sigma_theta <- solve(0.5 * (H_neg + t(H_neg)))
+  # Cholesky-factorise the precision (neg. Hessian), then derive covariance
+  # via triangular backsolve. We first sort parameters into a canonical order
+  # (by name) so results don't depend on the latent-variable ordering in the
+  # model specification string.
+  H_sym <- 0.5 * (H_neg + t(H_neg))
+  canon_perm <- order(parnames)
+  inv_perm <- order(canon_perm)
+  H_canon <- H_sym[canon_perm, canon_perm]
+  R_prec <- chol(H_canon) # upper Cholesky of canonical precision
+  L_canon <- backsolve(R_prec, diag(m)) # L_c L_c^T = Sigma_canon (upper tri)
+  L <- L_canon[inv_perm, ] # rows back to original param order
+  Sigma_theta <- tcrossprod(L) # reconstruct covariance
+  dimnames(Sigma_theta) <- list(parnames, parnames)
   lp_max <- joint_lp(theta_star) # before correction
 
-  # Choleski or eigen decomposition for whitening z = L^{-1}(theta - theta*)
-  if (TRUE) {
-    L <- t(chol(Sigma_theta))
-  } else {
-    eig <- eigen(Sigma_theta, symmetric = TRUE) # FIXME: If not pos def?
-    L <- eig$vectors %*% diag(sqrt(eig$values))
-  }
   Vscan <- sweep(Sigma_theta, 2, sqrt(diag(Sigma_theta)), "/")
 
   # Derivatives at optima
-  opt$dx <- numDeriv::grad(function(x) -1 * joint_lp(x), theta_star) # fd grad
+  opt$dx <- fast_grad(function(x) -1 * joint_lp(x), theta_star) # fd grad
+  opt$dx_analytic <- -1 * joint_lp_grad(theta_star)             # analytic grad
   if (isTRUE(debug)) {
-    grad_an <- -1 * joint_lp_grad(theta_star)
-    print(cbind(fd = opt$dx, analytic = grad_an, diff = grad_an - opt$dx))
+    tab <- data.frame(
+      analytic = round(opt$dx_analytic, 6),
+      fd       = round(opt$dx, 6),
+      diff     = round(opt$dx_analytic - opt$dx, 6),
+      row.names = parnames
+    )
+    cli::cli_rule(left = "{.strong Gradient check at posterior mode}")
+    print(tab)
+    cli::cli_rule()
   }
 
   timing <- add_timing(timing, "optim")
 
   ## ----- VB correction -------------------------------------------------------
-  vb_opt <- vb_shift <- vb_kld <- vb_kld_global <- NA
+  vb_opt <- vb_shift <- vb_kld <- vb_kld_global <- n_qmc <- NA
   if (isTRUE(vb_correction)) {
     if (isTRUE(verbose)) {
-      cli::cli_progress_step(
+      cli_progress_step(
         "Performing VB correction.",
-        msg_done = "VB correction; mean |\U03B4| = {formatC(mean(abs(vb_shift)),
+        msg_done = "VB correction; mean |\U03B4| = {formatC(mean(abs(vb_shift) / sqrt(diag(Sigma_theta))),
                     format = 'f', digits = 3)}\U03C3."
       )
     }
 
-    # QMC noise (scrambled Sobol)
-    us <- qrng::sobol(n = 50, d = m, randomize = "Owen", seed = 123)
+    # QMC noise (scrambled Sobol); scale n with dimension
+    n_qmc <- min(100L, max(30L, m + 20L))
+    us <- sobol_owen(n = n_qmc, d = m)
     zs <- rbind(0, qnorm(us) %*% t(L)) # Add 0 to "lock at" mode
 
     vb_ob <- function(delta, mu0, Z) {
@@ -334,6 +381,7 @@ inlavaan <- function(
 
   vb <- list(
     opt = vb_opt,
+    n_qmc = n_qmc,
     correction = vb_shift,
     kld = vb_kld,
     kld_global = vb_kld_global
@@ -352,13 +400,18 @@ inlavaan <- function(
   }
 
   # Marginal log-likelihood (for BF comparison)
-  mloglik <- lp_max + (m / 2) * log(2 * pi) + 0.5 * log(det(Sigma_theta))
+  # log det(Sigma) = -2 sum(log(diag(R_prec))) from the precision Cholesky
+  mloglik <- lp_max + (m / 2) * log(2 * pi) - sum(log(diag(R_prec)))
   if (isTRUE(vb_correction)) {
     mloglik <- mloglik - vb_kld_global
   }
   timing <- add_timing(timing, "loglik")
 
   ## ----- Marginal approximations ---------------------------------------------
+  if (isTRUE(verbose)) {
+    cli_progress_done()
+  }
+
   # pars_list <- setNames(as.list(1:m), paste0("pars[", 1:m, "]"))
   pars_list <- setNames(as.list(1:m), parnames)
   visual_debug <- NULL
@@ -369,61 +422,46 @@ inlavaan <- function(
     delta_outer <- 0.01 # for rate of change of Hessian (3rd deriv)
     delta_inner <- 0.001 # for rate of change of gradients (2nd deriv)
 
-    if (marginal_correction %in% c("shortcut", "hessian")) {
-      # Precompute baseline Hessian (diagonal of Hessian_z at mode)
-      Hz0 <- numeric(m)
-      for (j in 1:m) {
-        g_fwd <- -1 * joint_lp_grad(theta_star + L[, j] * delta_inner)
-        g_bwd <- -1 * joint_lp_grad(theta_star - L[, j] * delta_inner)
-        Hz0[j] <- sum(L[, j] * (g_fwd - g_bwd)) / (2 * delta_inner)
-      }
-    }
-
     get_gamma1 <- function(.j) {
-      if (marginal_correction == "none") {
-        gamma1j <- 0
-      } else {
-        th_plus <- theta_star + Vscan[, .j] * delta_outer
-        if (marginal_correction == "hessian") {
-          Htheta1_full <- numDeriv::jacobian(
-            function(x) -1 * joint_lp_grad(x),
-            th_plus
-          )
-          Hz1 <- diag(t(L) %*% Htheta1_full %*% L)
-        } else if (marginal_correction == "shortcut") {
-          Hz1 <- numeric(m)
-          for (jj in 1:m) {
-            g_fwd <- -1 * joint_lp_grad(th_plus + L[, jj] * delta_inner)
-            g_bwd <- -1 * joint_lp_grad(th_plus - L[, jj] * delta_inner)
-            Hz1[jj] <- sum(L[, jj] * (g_fwd - g_bwd)) / (2 * delta_inner)
-          }
-        }
-        dH_dz <- (Hz1 - Hz0) / delta_outer
-        gamma1j <- -0.5 * sum(dH_dz[-.j])
-      }
-      gamma1j
+      compute_gamma1j(
+        j = .j,
+        method = marginal_correction,
+        theta_star = theta_star,
+        Vscan = Vscan,
+        L = L,
+        joint_lp_grad = joint_lp_grad,
+        delta_outer = delta_outer,
+        delta_inner = delta_inner,
+        m = m
+      )
     }
   }
 
   if (marginal_method == "sampling") {
-    # Do sampling and return results
-    if (isTRUE(verbose)) {
-      cli::cli_progress_step("Sampling from posterior.")
-    }
     approx_data <- NULL
-    postmargres <- post_marg_sampling(
-      theta_star_vbc,
-      Sigma_theta,
-      pt,
-      ceq.K,
-      nsamp
-    )
   } else {
-    if (marginal_method == "asymgaus") {
-      if (isTRUE(verbose)) {
-        cli::cli_progress_step("Calibrating asymmetric Gaussians.")
+    # --- Resolve effective core count for marginal fitting ------------------
+    if (is.null(cores)) {
+      # Auto: serial for small m, parallel for large m
+      if (m > 120L) {
+        eff_cores <- parallel::detectCores(logical = FALSE)
+        if (is.na(eff_cores) || eff_cores < 2L) eff_cores <- 1L
+      } else {
+        eff_cores <- 1L
       }
+    } else {
+      eff_cores <- cores
+    }
+    if (eff_cores > 1L && .Platform$OS.type == "windows") { # nocov start
+      cli_alert_warning(
+        "Parallel marginal fitting uses forking and is not available on
+        Windows. Falling back to serial."
+      )
+      eff_cores <- 1L
+    } # nocov end
+    eff_cores <- min(eff_cores, m)
 
+    if (marginal_method == "asymgaus") {
       obtain_approx_data <- function(j) {
         # Gauge the drop in joint_lp in whitened Z space
         k <- 2
@@ -442,10 +480,14 @@ inlavaan <- function(
         )
       }
 
-      approx_data <- list()
-      for (j in seq_len(m)) {
-        approx_data[[j]] <- obtain_approx_data(j)
-      }
+      approx_data <- run_parallel_or_serial(
+        m = m,
+        FUN = obtain_approx_data,
+        cores = eff_cores,
+        verbose = verbose,
+        msg_serial = "Calibrating {j}/{m} asymmetric Gaussian{?s}.",
+        msg_parallel = "Calibrating {done}/{m} asymmetric Gaussians ({cores}\U00D7)."
+      )
       approx_data <- do.call(what = "rbind", approx_data)
 
       post_marg <- function(j, g, g_prime, ginv, ginv_prime) {
@@ -461,16 +503,8 @@ inlavaan <- function(
         )
       }
     } else if (marginal_method == "skewnorm") {
-      if (isTRUE(verbose)) {
-        j <- 0
-        cli::cli_progress_step(
-          "Fitting skew normal to {j}/{m} marginal{?s}.",
-          spinner = TRUE
-        )
-      }
-
       obtain_approx_data <- function(j) {
-        z <- seq(-4, 4, length = 31)
+        z <- seq(-4, 4, length = sn_fit_ngrid)
         yync <- yy <- numeric(length(z))
         gamma1j <- get_gamma1(j)
 
@@ -486,35 +520,38 @@ inlavaan <- function(
           temp = sn_fit_temp
         )
 
-        if (isTRUE(debug)) {
-          visual_debug[[j]] <<- data.frame(
+        vd <- data.frame(
+          x = z,
+          Original = exp(yync - max(yync)),
+          Corrected = exp(yy - max(yy)),
+          SN_Fit = dsnorm(
             x = z,
-            Original = exp(yync - max(yync)),
-            Corrected = exp(yy - max(yy)),
-            SN_Fit = dsnorm(
-              x = z,
-              xi = fit_sn$xi,
-              omega = fit_sn$omega,
-              alpha = fit_sn$alpha,
-              logC = fit_sn$logC
-            )
+            xi = fit_sn$xi,
+            omega = fit_sn$omega,
+            alpha = fit_sn$alpha,
+            logC = fit_sn$logC
           )
-        }
+        )
 
         # Adjust back to theta space
         fit_sn$xi <- theta_star[j] + fit_sn$xi * sqrt(Sigma_theta[j, j])
         fit_sn$omega <- fit_sn$omega * sqrt(Sigma_theta[j, j])
 
-        c(unlist(fit_sn), gamma1 = gamma1j)
+        list(fit = c(unlist(fit_sn), gamma1 = gamma1j), visual_debug = vd)
       }
 
-      approx_data <- visual_debug <- vector("list", length = m)
-      for (j in seq_len(m)) {
-        approx_data[[j]] <- obtain_approx_data(j)
-        if (isTRUE(verbose)) cli::cli_progress_update()
-      }
-      approx_data <- do.call(what = "rbind", approx_data)
+      all_results <- run_parallel_or_serial(
+        m = m,
+        FUN = obtain_approx_data,
+        cores = eff_cores,
+        verbose = verbose,
+        msg_serial = "Fitting {j}/{m} skew-normal marginal{?s}.",
+        msg_parallel = "Fitting {done}/{m} skew-normal marginals ({cores}\U00D7)."
+      )
+
+      approx_data <- do.call(what = "rbind", lapply(all_results, `[[`, "fit"))
       rownames(approx_data) <- parnames
+      visual_debug <- lapply(all_results, `[[`, "visual_debug")
       names(visual_debug) <- parnames
 
       post_marg <- function(j, g, g_prime, ginv, ginv_prime) {
@@ -555,6 +592,54 @@ inlavaan <- function(
       ginv_prime = pt$ginv_prime[PTFREEIDX]
     )
   }
+  timing <- add_timing(timing, "marginals")
+
+  ## ----- NORTA adjustment for SN copula sampling ----------------------------
+  R_star <- NULL
+  if (marginal_method == "skewnorm" && isTRUE(samp_copula)) {
+    if (isTRUE(verbose)) {
+      cli_progress_step("Adjusting copula correlations (NORTA).")
+    }
+    R_star <- norta_adjust_R(cov2cor(Sigma_theta), approx_data)
+  }
+  timing <- add_timing(timing, "norta")
+
+  ## ----- Draw posterior samples (once) ---------------------------------------
+  has_extra_samp_work <-
+    (sum(pt$free > 0 & grepl("cov", pt$mat)) > 0 &&
+      marginal_method != "sampling") ||
+    any(pt$op == ":=") ||
+    any(pt$op == "~*~") ||
+    test != "none"
+  samp_env <- NULL
+  if (isTRUE(verbose)) {
+    samp_msg <- if (has_extra_samp_work) {
+      "Posterior sampling and summarising."
+    } else {
+      "Drawing posterior samples."
+    }
+    samp_env <- environment()
+    cli_progress_step(samp_msg, spinner = TRUE, .envir = samp_env)
+  }
+  samp <- sample_params(
+    theta_star = theta_star_vbc,
+    Sigma_theta = Sigma_theta,
+    method = if (isTRUE(samp_copula)) marginal_method else "sampling",
+    approx_data = approx_data,
+    pt = pt,
+    lavmodel = lavmodel,
+    nsamp = nsamp,
+    R_star = R_star
+  )
+  theta_samp <- samp$theta_samp
+  x_samp <- samp$x_samp
+  vcov_x <- cov(x_samp)
+  dimnames(vcov_x) <- list(parnames, parnames)
+  timing <- add_timing(timing, "sampling")
+
+  if (marginal_method == "sampling") {
+    postmargres <- post_marg_sampling(x_samp)
+  }
 
   summ <- do.call(
     "rbind",
@@ -568,7 +653,7 @@ inlavaan <- function(
       y = parnames
     )
   )
-  summ <- cbind(summ, kld = vb$kld)
+  summ <- cbind(summ, kld = vb$kld, vb_shift_sigma = vb$correction / sqrt(diag(Sigma_theta)))
 
   pdf_data <- lapply(postmargres, function(x) x$pdf_data)
   names(pdf_data) <- parnames
@@ -579,33 +664,17 @@ inlavaan <- function(
   summ <- as.data.frame(summ)
   summ$Prior <- pt$prior[PTFREEIDX]
 
-  timing <- add_timing(timing, "marginals")
-
   ## ----- Sampling for covariances and defined params -------------------------
   if (sum(pt$free > 0 & grepl("cov", pt$mat)) > 0) {
     if (marginal_method == "sampling") {
-      # Do nothing
+      # Already covered by post_marg_sampling above
     } else {
-      if (isTRUE(verbose)) {
-        cli::cli_progress_step("Sampling covariances and defined parameters.")
-      }
-
-      if (marginal_method == "skewnorm") {
-        samp_cov <- sample_covariances_fit_sn(
-          theta_star_vbc,
-          Sigma_theta,
-          pt,
-          ceq.K,
-          nsamp
-        )
+      if (marginal_method == "skewnorm" && isTRUE(sn_fit_sample)) {
+        samp_cov <- sample_covariances_fit_sn(x_samp, pt)
+        sn_rows <- do.call(rbind, lapply(samp_cov, `[[`, "sn_params"))
+        approx_data <- rbind(approx_data, sn_rows)
       } else {
-        samp_cov <- sample_covariances(
-          theta_star_vbc,
-          Sigma_theta,
-          pt,
-          ceq.K,
-          nsamp
-        )
+        samp_cov <- sample_covariances(x_samp, pt)
       }
 
       for (cov_name in names(samp_cov)) {
@@ -619,16 +688,14 @@ inlavaan <- function(
 
   # Defined parameters
   if (any(pt$op == ":=")) {
-    defpars <- get_defpars(
-      theta_star_vbc,
-      Sigma_theta,
-      marginal_method,
-      approx_data,
-      pt,
-      lavmodel,
-      lavsamplestats,
-      nsamp = 250
-    )
+    if (marginal_method == "skewnorm" && isTRUE(sn_fit_sample)) { # nocov start
+      defpars <- get_defpars_fit_sn(x_samp, pt)
+      sn_rows <- do.call(rbind, lapply(defpars, `[[`, "sn_params"))
+      approx_data <- rbind(approx_data, sn_rows)
+    } else { # nocov end
+      defpars <- get_defpars(x_samp, pt)
+    }
+
     for (def_name in names(defpars)) {
       tmp_new_summ <- defpars[[def_name]]$summary
       summ[def_name, names(tmp_new_summ)] <- tmp_new_summ
@@ -639,16 +706,7 @@ inlavaan <- function(
 
   # For binary and ordinal data, sample the deltas
   if (any(pt$op == "~*~")) {
-    deltapars <- get_thetaparamerization_deltas(
-      theta_star_vbc,
-      Sigma_theta,
-      marginal_method,
-      approx_data,
-      pt,
-      lavmodel,
-      lavsamplestats,
-      nsamp = 250
-    )
+    deltapars <- get_thetaparamerization_deltas(x_samp, lavmodel)
     names(deltapars) <- pt$names[which(pt$op == "~*~")]
 
     for (delta_name in names(deltapars)) {
@@ -661,36 +719,20 @@ inlavaan <- function(
 
   ## ----- Compute ppp and dic -------------------------------------------------
   if (test != "none") {
-    env <- NULL
-    if (isTRUE(verbose)) {
-      env <- environment()
-      cli::cli_progress_step(
-        "Computing ppp and DIC.",
-        spinner = TRUE,
-        .envir = env
-      )
-    }
     ppp <- get_ppp(
-      theta_star_vbc,
-      Sigma_theta,
-      marginal_method,
-      approx_data,
-      pt,
-      lavmodel,
-      lavsamplestats,
-      lavdata,
-      nsamp = nsamp,
-      cli_env = env
+      x_samp = x_samp,
+      lavmodel = lavmodel,
+      lavsamplestats = lavsamplestats,
+      lavdata = lavdata,
+      lavpartable = lavpartable,
+      cli_env = samp_env
     )
     dic_list <- get_dic(
-      theta_star_vbc,
-      Sigma_theta,
-      marginal_method,
-      approx_data,
-      pt,
-      lavmodel,
-      lavsamplestats,
-      function(x) {
+      x_samp = x_samp,
+      theta_star = theta_star_vbc,
+      pt = pt,
+      lavmodel = lavmodel,
+      loglik = function(x) {
         inlav_model_loglik(
           x,
           lavmodel,
@@ -700,8 +742,7 @@ inlavaan <- function(
           lavcache
         )
       },
-      nsamp = nsamp,
-      cli_env = env
+      cli_env = samp_env
     )
   } else {
     ppp <- dic_list <- NULL
@@ -720,8 +761,11 @@ inlavaan <- function(
     theta_star_novbc = as.numeric(theta_star),
     theta_star = as.numeric(theta_star_vbc),
     Sigma_theta = Sigma_theta,
+    R_star = R_star,
+    vcov_x = vcov_x,
     theta_star_trans = theta_star_trans,
     approx_data = approx_data,
+    nsamp = nsamp,
     pdf_data = pdf_data,
     partable = pt,
     lavmodel = lavmodel,
@@ -768,19 +812,24 @@ inlavaan <- function(
 acfa <- function(
   model,
   data,
-  dp = blavaan::dpriors(),
-  marginal_method = c("skewnorm", "asymgaus", "marggaus", "sampling"),
-  nsamp = 500,
+  dp = priors_for(),
   test = "standard",
-  marginal_correction = c("shortcut", "hessian", "none"),
+  vb_correction = TRUE,
+  marginal_method = c("skewnorm", "asymgaus", "marggaus", "sampling"),
+  marginal_correction = c("shortcut", "shortcut_fd", "hessian", "none"),
+  nsamp = 1000,
+  samp_copula = TRUE,
+  sn_fit_ngrid = 21,
   sn_fit_logthresh = -6,
-  sn_fit_temp = NA,
+  sn_fit_temp = 1,
+  sn_fit_sample = TRUE,
   control = list(),
   verbose = TRUE,
   debug = FALSE,
   add_priors = TRUE,
   optim_method = c("nlminb", "ucminf", "optim"),
   numerical_grad = FALSE,
+  cores = NULL,
   ...
 ) {
   sc <- sys.call()
@@ -815,19 +864,24 @@ acfa <- function(
 asem <- function(
   model,
   data,
-  dp = blavaan::dpriors(),
-  marginal_method = c("skewnorm", "asymgaus", "marggaus", "sampling"),
-  nsamp = 500,
+  dp = priors_for(),
   test = "standard",
-  marginal_correction = c("shortcut", "hessian", "none"),
+  vb_correction = TRUE,
+  marginal_method = c("skewnorm", "asymgaus", "marggaus", "sampling"),
+  marginal_correction = c("shortcut", "shortcut_fd", "hessian", "none"),
+  nsamp = 1000,
+  samp_copula = TRUE,
+  sn_fit_ngrid = 21,
   sn_fit_logthresh = -6,
-  sn_fit_temp = NA,
+  sn_fit_temp = 1,
+  sn_fit_sample = TRUE,
   control = list(),
   verbose = TRUE,
   debug = FALSE,
   add_priors = TRUE,
   optim_method = c("nlminb", "ucminf", "optim"),
   numerical_grad = FALSE,
+  cores = NULL,
   ...
 ) {
   sc <- sys.call()
@@ -860,19 +914,24 @@ asem <- function(
 agrowth <- function(
   model,
   data,
-  dp = blavaan::dpriors(),
-  marginal_method = c("skewnorm", "asymgaus", "marggaus", "sampling"),
-  nsamp = 500,
+  dp = priors_for(),
   test = "standard",
-  marginal_correction = c("shortcut", "hessian", "none"),
+  vb_correction = TRUE,
+  marginal_method = c("skewnorm", "asymgaus", "marggaus", "sampling"),
+  marginal_correction = c("shortcut", "shortcut_fd", "hessian", "none"),
+  nsamp = 1000,
+  samp_copula = TRUE,
+  sn_fit_ngrid = 21,
   sn_fit_logthresh = -6,
-  sn_fit_temp = NA,
+  sn_fit_temp = 1,
+  sn_fit_sample = TRUE,
   control = list(),
   verbose = TRUE,
   debug = FALSE,
   add_priors = TRUE,
   optim_method = c("nlminb", "ucminf", "optim"),
   numerical_grad = FALSE,
+  cores = NULL,
   ...
 ) {
   sc <- sys.call()

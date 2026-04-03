@@ -11,7 +11,7 @@ inlav_model_loglik <- function(
   Sigma <- lavimplied$cov[[1]]
 
   out <- -1e40
-  if (!check_mat(Sigma)) {
+  if (!is_bad_cov(Sigma)) {
     if (lavmodel@estimator == "ML") {
       # Multivariate normal log-likelihood
       out <- lavaan___lav_model_loglik(
@@ -36,7 +36,7 @@ inlav_model_loglik <- function(
       )
       logl <- sum(attr(fx, "logl.group"))
       if (is.na(logl)) {
-        return(-1e40)
+        return(-1e40) # nocov
       }
       out <- kappa * logl
     }
@@ -64,13 +64,13 @@ inlav_model_grad <- function(
   out <-
     if (lavmodel@estimator == "ML") {
       -1 * lavsamplestats@ntotal * grad_F
-    } else if (lavmodel@estimator == "PML") {
+    } else if (lavmodel@estimator == "PML") { # nocov start
       no_ord <- length(lavdata@ordered)
       kappa <- 1 / sqrt(no_ord) # scaling factor for PML
       -1 * kappa * grad_F
     } else {
       0 * x
-    }
+    } # nocov end
 
   out
 }

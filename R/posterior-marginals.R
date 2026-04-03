@@ -17,24 +17,28 @@ prodfac_lp <- function(z, sigma_asym) {
 
 # Marginalised distribution
 marg_lp <- function(tj, j, theta_star, Sigma_theta, sigma_asym) {
-  if (TRUE) {
-    L <- t(chol(Sigma_theta))
-  } else {
-    eig <- eigen(Sigma_theta, symmetric = TRUE) # FIXME: If not pos def?
-    L <- eig$vectors %*% diag(sqrt(eig$values))
-  }
-  L_inv <- solve(L)
+  # Canonical-ordered Cholesky whitening — permutation invariant
+  pnames    <- colnames(Sigma_theta)
+  cperm     <- if (!is.null(pnames)) order(pnames) else seq_len(nrow(Sigma_theta))
+  iperm     <- order(cperm)
+  R         <- chol(Sigma_theta[cperm, cperm]) # canonical upper Cholesky
+  L_canon   <- t(R)                            # lower Cholesky in canonical order
+  # Rows → original order; cols stay canonical z-order
+  L         <- L_canon[iperm, ]
+  # L^{-1} for whitening: solve L x = b via canonical Cholesky
+  # L^{-1} = L_canon^{-1} P, which is forwardsolve(L_canon, P x)
 
   sapply(tj, function(thetaj) {
-    # First compute conditional expectation
+    # Conditional expectation
     theta_new <- rep(NA, length(theta_star))
     theta_new[-j] <- theta_star[-j] +
       Sigma_theta[-j, j] / Sigma_theta[j, j] * (thetaj - theta_star[j])
     theta_new[j] <- thetaj
 
-    # Convert to z and get prodfac_lp
-    z_new <- as.numeric(L_inv %*% (theta_new - theta_star))
-    prodfac_lp(z_new, sigma_asym)
+    # Whiten via canonical Cholesky: z = L^{-1}(θ - θ*)
+    diff_canon <- (theta_new - theta_star)[cperm]
+    z_new <- forwardsolve(L_canon, diff_canon)
+    prodfac_lp(z_new, sigma_asym[cperm, , drop = FALSE])
   })
 }
 
@@ -88,8 +92,8 @@ post_marg_asymgaus <- function(
   qfj_orig <- stats::splinefun(Fx, x, method = "monoH.FC")
 
   # Combine results
-  res <- c(Ex, SDx, qfj_orig(c(0.025, 0.5, 0.975)), xmax)
-  names(res) <- c("Mean", "SD", "2.5%", "50%", "97.5%", "Mode")
+  res <- c(Ex, SDx, qfj_orig(c(0.025, 0.25, 0.5, 0.75, 0.975)), xmax)
+  names(res) <- c("Mean", "SD", "2.5%", "25%", "50%", "75%", "97.5%", "Mode")
 
   list(
     summary = res,
@@ -129,7 +133,7 @@ post_marg_skewnorm <- function(
   fx <- fx / C
 
   # Compute mean and variance using GH quadrature
-  quad <- statmod::gauss.quad(61, kind = "hermite")
+  quad <- .gauss_hermite(61)
   nodes <- quad$nodes * sqrt(2)
   weights <- quad$weights / sqrt(pi)
   ginvz <- ginv(xi + omega * nodes)
@@ -140,7 +144,7 @@ post_marg_skewnorm <- function(
 
   # Compute quantiles
   qq <- ginv(qsnorm_fast(
-    c(0.025, 0.5, 0.975),
+    c(0.025, 0.25, 0.5, 0.75, 0.975),
     xi = xi,
     omega = omega,
     alpha = alpha
@@ -151,7 +155,7 @@ post_marg_skewnorm <- function(
 
   # Combine results
   res <- c(Ex, SDx, qq, xmax)
-  names(res) <- c("Mean", "SD", "2.5%", "50%", "97.5%", "Mode")
+  names(res) <- c("Mean", "SD", "2.5%", "25%", "50%", "75%", "97.5%", "Mode")
 
   list(
     summary = res,
@@ -178,7 +182,7 @@ post_marg_marggaus <- function(
   x_sd <- abs(ginv_prime(thetaj_mean)) * thetaj_sd
 
   # Compute quantiles
-  qq <- ginv(qnorm(c(0.025, 0.5, 0.975), mean = thetaj_mean, sd = thetaj_sd))
+  qq <- ginv(qnorm(c(0.025, 0.25, 0.5, 0.75, 0.975), mean = thetaj_mean, sd = thetaj_sd))
 
   # Build PDF data
   tt <- theta_star[j] + seq(-4, 4, length = 100) * sqrt(Sigma_theta[j, j])
@@ -199,7 +203,7 @@ post_marg_marggaus <- function(
 
   # Combine results
   res <- c(x_mean, x_sd, qq, xmax)
-  names(res) <- c("Mean", "SD", "2.5%", "50%", "97.5%", "Mode")
+  names(res) <- c("Mean", "SD", "2.5%", "25%", "50%", "75%", "97.5%", "Mode")
 
   list(
     summary = res,
@@ -208,25 +212,7 @@ post_marg_marggaus <- function(
 }
 
 # Sampling approximation
-post_marg_sampling <- function(theta, Sigma_theta, pt, K, nsamp = 1000) {
-  theta_samp <- mvtnorm::rmvnorm(nsamp, mean = theta, sigma = Sigma_theta)
-  if (!all(dim(K) == 0)) {
-    theta_samp <- t(apply(theta_samp, 1, function(pars) as.numeric(K %*% pars)))
-  }
-  x_samp <- apply(theta_samp, 1, pars_to_x, pt = pt)
-
-  apply(x_samp, 1, function(y) {
-    Ex <- mean(y)
-    SDx <- stats::sd(y)
-    qq <- quantile(y, probs = c(0.025, 0.5, 0.975))
-    dens <- density(y)
-    xmax <- dens$x[which.max(dens$y)]
-    res <- c(Ex, SDx, qq, xmax)
-    names(res) <- c("Mean", "SD", "2.5%", "50%", "97.5%", "Mode")
-
-    list(
-      summary = res,
-      pdf_data = data.frame(x = dens$x, y = dens$y)
-    )
-  })
+# Accepts pre-computed x_samp (nsamp x p matrix) and summarises each parameter
+post_marg_sampling <- function(x_samp) {
+  apply(x_samp, 2, summarise_samples)
 }

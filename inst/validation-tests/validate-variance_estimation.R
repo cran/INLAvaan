@@ -3,7 +3,10 @@ testthat::skip_on_cran()
 
 gen_bivariate_data <- function(n, corr = 0.5) {
   Sigma_true <- matrix(c(1, corr, corr, 1), nrow = 2)
-  x <- mvtnorm::rmvnorm(n, sigma = Sigma_true)
+  U <- chol(Sigma_true)
+  z_raw <- matrix(rnorm(n * ncol(Sigma_true)), nrow = n)
+  x <- z_raw %*% U
+  # x <- mvtnorm::rmvnorm(n, sigma = Sigma_true)
   data.frame(x1 = x[, 1], x2 = x[, 2])
 }
 
@@ -43,6 +46,8 @@ test_that("Comparison to MCMC", {
 ## CHECK AGAINST MCMC ##########################################################
 ################################################################################
 testthat::skip_if_not(interactive())
+testthat::skip_if_not_installed("rstan")
+testthat::skip_if_not_installed("future")
 library(rstan)
 future::plan("multisession", workers = future::availableCores() - 2)
 n <- 250

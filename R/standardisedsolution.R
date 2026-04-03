@@ -8,7 +8,12 @@
 #' @param ... Additional arguments sent to `lavaan::standardizedSolution()`.
 #'
 #' @returns A `data.frame` containing standardised model parameters.
+#'
+#' @seealso [summary()], [coef()], [vcov()]
+#'
 #' @export
+#' @name standardisedsolution
+#' @rdname standardisedsolution
 #' @example inst/examples/ex-stdsoln.R
 standardisedsolution <- function(
   object,
@@ -34,7 +39,7 @@ standardisedsolution <- function(
   fit_inlv <- get_inlavaan_internal(object)
   pt <- fit_inlv$partable
 
-  x_samp <- with(
+  samp <- with(
     fit_inlv,
     sample_params(
       theta_star = theta_star,
@@ -43,10 +48,10 @@ standardisedsolution <- function(
       approx_data = approx_data,
       pt = partable,
       lavmodel = lavmodel,
-      nsamp = nsamp,
-      return_theta = FALSE
+      nsamp = nsamp
     )
   )
+  x_samp <- samp$x_samp
 
   xstd_samp <- vector("list", nrow(x_samp))
   for (i in seq_len(nrow(x_samp))) {
@@ -80,7 +85,7 @@ standardisedsolution <- function(
     ci_lower = apply(xstd_samp, 2, quantile, probs = (1 - level) / 2),
     ci_upper = apply(xstd_samp, 2, quantile, probs = 1 - (1 - level) / 2),
     median = apply(xstd_samp, 2, median),
-    mode = apply(xstd_samp, 2, modeest::mfv1)
+    mode = apply(xstd_samp, 2, dmode)
   )
 
   out <- lavaan::standardizedSolution(
@@ -110,6 +115,7 @@ standardisedsolution <- function(
   out
 }
 
+#' @name standardisedsolution
 #' @rdname standardisedsolution
 #' @export
 standardisedSolution <- function(
@@ -144,6 +150,7 @@ standardisedSolution <- function(
   )
 }
 
+#' @name standardizedsolution
 #' @rdname standardisedsolution
 #' @export
 standardizedsolution <- function(
@@ -178,6 +185,7 @@ standardizedsolution <- function(
   )
 }
 
+#' @name standardizedsolution
 #' @rdname standardisedsolution
 #' @export
 standardizedSolution <- function(

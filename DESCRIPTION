@@ -1,7 +1,7 @@
 Type: Package
 Package: INLAvaan
 Title: Approximate Bayesian Latent Variable Analysis
-Version: 0.2.3
+Version: 0.2.4
 Authors@R: c(
     person("Haziq", "Jamil", , "haziq.jamil@gmail.com", role = c("aut", "cre", "cph"),
            comment = c(ORCID = "0000-0003-3298-1010")),
@@ -12,26 +12,27 @@ Authors@R: c(
   )
 Description: Implements approximate Bayesian inference for Structural
     Equation Models (SEM) using a custom adaptation of the Integrated
-    Nested Laplace Approximation as described in Rue et al. (2009)
-    <doi:10.1111/j.1467-9868.2008.00700.x>. Provides a computationally
+    Nested Laplace Approximation (Rue et al., 2009)
+    <doi:10.1111/j.1467-9868.2008.00700.x> as described in Jamil and Rue
+    (2026a) <doi:10.48550/arXiv.2603.25690>. Provides a computationally
     efficient alternative to Markov Chain Monte Carlo (MCMC) for Bayesian
     estimation, allowing users to fit latent variable models using the
-    'lavaan' syntax.
+    'lavaan' syntax. See also the companion paper on implementation and
+    workflows, Jamil and Rue (2026b) <doi:10.48550/arXiv.2604.00671>.
 License: GPL (>= 3)
 URL: https://inlavaan.haziqj.ml/, https://github.com/haziqj/INLAvaan
 BugReports: https://github.com/haziqj/INLAvaan/issues
-Imports: blavaan, cli, cowplot, dplyr, ggplot2, lavaan, methods,
-        modeest, mvtnorm, numDeriv, qrng, scales, statmod, stats,
-        tidyr, ucminf, utils
-Suggests: future, knitr, lme4, psychotools, quarto, rmarkdown, rstan,
-        sn, spacefillr, testthat (>= 3.0.0)
+Depends: R (>= 3.5)
+Imports: cli, graphics, lavaan, methods, parallel, stats, utils
+Suggests: blavaan, ggplot2, knitr, lme4, numDeriv, qrng, quarto, sn,
+        testthat (>= 3.0.0), ucminf
 VignetteBuilder: quarto
 Config/Needs/website: rmarkdown
 Config/testthat/edition: 3
 Encoding: UTF-8
 RoxygenNote: 7.3.3
 NeedsCompilation: no
-Packaged: 2026-01-28 20:36:22 UTC; haziqj
+Packaged: 2026-04-02 10:56:20 UTC; haziqj
 Author: Haziq Jamil [aut, cre, cph] (ORCID:
     <https://orcid.org/0000-0003-3298-1010>),
   Håvard Rue [ctb] (ORCID: <https://orcid.org/0000-0002-0222-1881>,
@@ -39,4 +40,4 @@ Author: Haziq Jamil [aut, cre, cph] (ORCID:
   Alvin Bong [ctb] (Initial site build)
 Maintainer: Haziq Jamil <haziq.jamil@gmail.com>
 Repository: CRAN
-Date/Publication: 2026-01-28 22:50:02 UTC
+Date/Publication: 2026-04-03 02:20:22 UTC

@@ -1,3 +1,27 @@
+# ---------------------------------------------------------------------------
+# Shared helper: summarise a numeric vector of posterior samples into the
+# standard (Mean, SD, 2.5%, 50%, 97.5%, Mode) list + pdf_data table.
+# ---------------------------------------------------------------------------
+summarise_samples <- function(y) {
+  Ex <- mean(y)
+  SDx <- stats::sd(y)
+  qq <- stats::quantile(y, probs = c(0.025, 0.25, 0.5, 0.75, 0.975))
+  dens <- stats::density(y)
+  xmax <- dens$x[which.max(dens$y)]
+  res <- c(Ex, SDx, qq, xmax)
+  names(res) <- c("Mean", "SD", "2.5%", "25%", "50%", "75%", "97.5%", "Mode")
+  list(
+    summary = res,
+    pdf_data = data.frame(x = dens$x, y = dens$y)
+  )
+}
+
+# ---------------------------------------------------------------------------
+# Core sampling function: draw from the Gaussian-copula posterior.
+# Returns a list with:
+#   $theta_samp  - nsamp x m matrix in the internal (theta) parameterisation
+#   $x_samp      - nsamp x p matrix in the lavaan (x) parameterisation
+# ---------------------------------------------------------------------------
 sample_params <- function(
   theta_star,
   Sigma_theta,
@@ -6,13 +30,18 @@ sample_params <- function(
   pt,
   lavmodel,
   nsamp = 1000,
-  return_theta = FALSE
+  R_star = NULL # NORTA-adjusted correlation matrix for SN copula
 ) {
   R <- cov2cor(Sigma_theta)
-  z <- mvtnorm::rmvnorm(n = nsamp, sigma = R)
+  R_use <- if (method == "skewnorm" && !is.null(R_star)) R_star else R
+  Lt <- chol(R_use)
+  z_raw <- matrix(rnorm(nsamp * ncol(R)), nrow = nsamp)
+  z <- z_raw %*% Lt
   u <- apply(z, 2, pnorm)
+  if (!is.matrix(u)) {
+    u <- matrix(u, nrow = 1)
+  } # nocov – nsamp == 1 edge case
 
-  # FIXME: Repeated code in post_marg_skewnorm and post_marg_marggaus
   # Use marginals to get theta
   if (method == "sampling") {
     D <- diag(sqrt(diag(Sigma_theta)))
@@ -73,12 +102,9 @@ sample_params <- function(
     theta <- t(apply(theta, 1, function(pars) as.numeric(K %*% pars)))
   }
 
-  if (return_theta) {
-    return(theta)
-  } else {
-    x <- t(apply(theta, 1, pars_to_x, pt = pt))
-    return(x)
-  }
+  x <- t(apply(theta, 1, pars_to_x, pt = pt))
+
+  list(theta_samp = theta, x_samp = x)
 }
 
 # 1. Get correlation matrix R = cov2cor(Sigma_theta)
@@ -95,94 +121,113 @@ sample_params <- function(
 # Then ppp = P(T(Srep, Sigma) >= T(S, Sigma))
 
 get_ppp <- function(
-  theta_star,
-  Sigma_theta,
-  method,
-  approx_data,
-  pt,
+  x_samp,
   lavmodel,
   lavsamplestats,
   lavdata,
-  nsamp = 250,
+  lavpartable = NULL,
   cli_env = NULL
 ) {
-  x <- sample_params(
-    theta_star = theta_star,
-    Sigma_theta = Sigma_theta,
-    method = method,
-    approx_data = approx_data,
-    pt = pt,
-    lavmodel = lavmodel,
-    nsamp = nsamp,
-    return_theta = FALSE
-  )
-
-  #log |Sigma| + trace(S Sigma^{-1}) - log |S| - p
-  Fdiscrp <- function(S, Sigma) {
-    logdet_Sigma <- as.numeric(determinant(Sigma, logarithm = TRUE)$modulus)
-    logdet_S <- as.numeric(determinant(S, logarithm = TRUE)$modulus)
-    trace_term <- sum(diag(solve(Sigma, S)))
-    logdet_Sigma + trace_term - logdet_S - nrow(S)
-  }
-
   n_blocks <- lavmodel@nblocks
   n_levels <- lavdata@nlevels
-  res <- vector("numeric", length = nrow(x))
-  for (i in seq_len(nrow(x))) {
-    if (!is.null(cli_env)) {
-      cli::cli_progress_update(.envir = cli_env)
+
+  # Pre-compute per-block observed variable names (needed for alignment)
+  ov_names_block <- vector("list", n_blocks)
+  for (b in seq_len(n_blocks)) {
+    g <- ceiling(b / n_levels)
+    ov_all <- lavdata@ov.names[[g]]
+    if (!is.null(lavpartable)) {
+      ov_names_block[[b]] <- unique(
+        lavpartable$lhs[
+          lavpartable$block == b &
+            lavpartable$op == "~~" &
+            lavpartable$lhs == lavpartable$rhs &
+            lavpartable$lhs %in% ov_all
+        ]
+      )
+    }
+  }
+
+  # Pre-compute per-block observed stats (S, n, logdet_S) — invariant across
+  # samples, so we avoid redundant extraction and determinant calls in the loop.
+  block_obs <- vector("list", n_blocks)
+  for (b in seq_len(n_blocks)) {
+    g <- ceiling(b / n_levels)
+    l <- (b - 1) %% n_levels + 1
+
+    if (n_levels > 1) {
+      # nocov start
+      cluster_stats <- lavsamplestats@YLp[[g]][[2]]
+      ov_all <- lavdata@ov.names[[g]]
+      if (l == 1) {
+        n <- lavdata@nobs[[g]]
+        S <- cluster_stats$Sigma.W
+      } else {
+        n <- lavdata@Lp[[g]]$nclusters[[l]]
+        S <- cluster_stats$Sigma.B
+      }
+      rownames(S) <- colnames(S) <- ov_all
+      keep <- rowSums(S != 0) > 0
+      S <- S[keep, keep, drop = FALSE]
+      # nocov end
+    } else {
+      n <- lavsamplestats@nobs[[g]]
+      S <- lavsamplestats@cov[[g]]
     }
 
-    xx <- x[i, ]
+    logdet_S <- as.numeric(determinant(S, logarithm = TRUE)$modulus)
+    block_obs[[b]] <- list(S = S, n = n, logdet_S = logdet_S)
+  }
+
+  res <- vector("numeric", length = nrow(x_samp))
+  for (i in seq_len(nrow(x_samp))) {
+    if (!is.null(cli_env)) {
+      cli_progress_update(.envir = cli_env) # nocov
+    }
+
+    xx <- x_samp[i, ]
     lavmodel_x <- lavaan::lav_model_set_parameters(lavmodel, xx)
     lavimplied <- lavaan::lav_model_implied(lavmodel_x)
 
     Tobs <- 0
     Trep <- 0
 
-    # 3. Iterate over BLOCKS (Works for both Single and Multilevel)
     for (b in seq_len(n_blocks)) {
-      # Map Block -> Group (g) and Level (l)
-      # If single level, l is always 1
-      g <- ceiling(b / n_levels)
-      l <- (b - 1) %% n_levels + 1
+      S <- block_obs[[b]]$S
+      n <- block_obs[[b]]$n
+      logdet_S <- block_obs[[b]]$logdet_S
 
-      # --- LOGIC BRANCHING ---
-      if (n_levels > 1) {
-        # === MULTILEVEL CASE ===
-        # Extract from YLp[[g]][[2]]
-        cluster_stats <- lavsamplestats@YLp[[g]][[2]]
-
-        if (l == 1) {
-          # Level 1 (Within): Use Total N
-          n <- lavdata@nobs[[g]]
-          S <- cluster_stats$Sigma.W
-        } else {
-          # Level 2 (Between): Use Cluster N
-          n <- lavdata@Lp[[g]]$nclusters[[l]]
-          S <- cluster_stats$Sigma.B
-        }
-
-        keep <- rowSums(S != 0) > 0
-        S_reduced <- S[keep, keep, drop = FALSE]
-        S <- S_reduced
-      } else {
-        # === SINGLE-LEVEL CASE ===
-        # Standard extraction
-        n <- lavsamplestats@nobs[[g]]
-        S <- lavsamplestats@cov[[g]]
-      }
-
-      # Retrieve Model Implied Sigma (Universal)
       Sigma <- lavimplied$cov[[b]]
 
-      if (!check_mat(Sigma)) {
-        # Simulate and Accumulate
-        W <- stats::rWishart(1, df = n - 1, Sigma = Sigma)[,, 1]
-        Srep <- W / (n - 1)
+      # Align dimensions for multilevel models
+      if (n_levels > 1 && length(ov_names_block[[b]]) == nrow(Sigma)) {
+        # nocov start
+        rownames(Sigma) <- colnames(Sigma) <- ov_names_block[[b]]
+        shared <- intersect(rownames(S), rownames(Sigma))
+        if (length(shared) > 0) {
+          S <- S[shared, shared, drop = FALSE]
+          Sigma <- Sigma[shared, shared, drop = FALSE]
+          logdet_S <- as.numeric(determinant(S, logarithm = TRUE)$modulus)
+        }
+        # nocov end
+      }
 
-        Tobs <- Tobs + Fdiscrp(S, Sigma)
-        Trep <- Trep + Fdiscrp(Srep, Sigma)
+      if (!is_bad_cov(Sigma)) {
+        p <- nrow(Sigma)
+
+        # Cholesky of Sigma — shared for logdet, inverse, and both discrepancies
+        L <- chol(Sigma)
+        logdet_Sigma <- 2 * sum(log(diag(L)))
+        Sigma_inv <- chol2inv(L)
+
+        # Wishart draw for replicated data
+        W <- matrix(stats::rWishart(1, df = n - 1, Sigma = Sigma)[,, 1], p, p)
+        Srep <- W / (n - 1)
+        logdet_Srep <- as.numeric(determinant(Srep, logarithm = TRUE)$modulus)
+
+        # F(S, Sigma) = log|Sigma| + tr(Sigma^{-1} S) - log|S| - p
+        Tobs <- Tobs + logdet_Sigma + sum(Sigma_inv * S) - logdet_S - p
+        Trep <- Trep + logdet_Sigma + sum(Sigma_inv * Srep) - logdet_Srep - p
       }
     }
 
@@ -192,58 +237,18 @@ get_ppp <- function(
   mean(res)
 }
 
-sample_covariances <- function(theta, Sigma_theta, pt, K, nsamp = 1000) {
+sample_covariances <- function(x_samp, pt) {
   pt_cov_rows <- grep("cov", pt$mat)
   pt_cov_free_rows <- pt_cov_rows[pt$free[pt_cov_rows] > 0]
   idxcov <- pt$free[pt_cov_free_rows]
 
-  theta_samp <- mvtnorm::rmvnorm(nsamp, mean = theta, sigma = Sigma_theta)
-  if (!all(dim(K) == 0)) {
-    theta_samp <- t(apply(theta_samp, 1, function(pars) as.numeric(K %*% pars)))
-  }
-  x_samp <- apply(theta_samp, 1, pars_to_x, pt = pt)
+  cov_samp <- x_samp[, idxcov, drop = FALSE]
+  colnames(cov_samp) <- pt$names[pt_cov_free_rows]
 
-  cov_samp <- x_samp[idxcov, , drop = FALSE]
-  rownames(cov_samp) <- pt$names[pt_cov_free_rows]
-
-  # FIXME: Repeated code in post_marg_sampling
-  apply(cov_samp, 1, function(y) {
-    Ex <- mean(y)
-    SDx <- sd(y)
-    qq <- quantile(y, probs = c(0.025, 0.5, 0.975))
-    dens <- density(y)
-    xmax <- dens$x[which.max(dens$y)]
-    res <- c(Ex, SDx, qq, xmax)
-    names(res) <- c("Mean", "SD", "2.5%", "50%", "97.5%", "Mode")
-
-    list(
-      summary = res,
-      pdf_data = data.frame(x = dens$x, y = dens$y)
-    )
-  })
+  apply(cov_samp, 2, summarise_samples)
 }
 
-get_defpars <- function(
-  theta_star,
-  Sigma_theta,
-  method,
-  approx_data,
-  pt,
-  lavmodel,
-  lavsamplestats,
-  nsamp = 250
-) {
-  x_samp <- sample_params(
-    theta_star = theta_star,
-    Sigma_theta = Sigma_theta,
-    method = method,
-    approx_data = approx_data,
-    pt = pt,
-    lavmodel = lavmodel,
-    nsamp = nsamp,
-    return_theta = FALSE
-  )
-
+get_defpars <- function(x_samp, pt) {
   pt_def_rows <- which(pt$op == ":=")
   param_map <- setNames(pt$free[pt$free > 0], pt$label[pt$free > 0])
   param_map <- param_map[names(param_map) != ""]
@@ -264,43 +269,87 @@ get_defpars <- function(
   })
   colnames(def_samp) <- pt$names[pt_def_rows]
 
-  # FIXME: Repeated code in post_marg_sampling
-  apply(def_samp, 2, function(y) {
-    Ex <- mean(y)
-    SDx <- sd(y)
-    qq <- quantile(y, probs = c(0.025, 0.5, 0.975))
-    dens <- density(y)
-    xmax <- dens$x[which.max(dens$y)]
+  apply(def_samp, 2, summarise_samples)
+}
+
+get_defpars_fit_sn <- function(x_samp, pt) { # nocov start
+  pt_def_rows <- which(pt$op == ":=")
+  param_map <- setNames(pt$free[pt$free > 0], pt$label[pt$free > 0])
+  param_map <- param_map[names(param_map) != ""]
+
+  def_funs <- lapply(pt_def_rows, function(i) {
+    expr <- parse(text = pt$rhs[i])
+
+    function(theta) {
+      env_vals <- as.list(theta[param_map])
+      names(env_vals) <- names(param_map)
+      eval(expr, envir = env_vals)
+    }
+  })
+
+  def_samp <- sapply(def_funs, function(fn) {
+    apply(x_samp, 1, fn)
+  })
+  colnames(def_samp) <- pt$names[pt_def_rows]
+
+  sn_params <- apply(def_samp, 2, fit_skew_normal_samp)
+  sn_params <- do.call("rbind", lapply(sn_params, unlist))
+  sn_params <- cbind(sn_params, logC = 0, k = 0, rmse = 0, nmad = 0, gamma1 = 0)
+
+  apply(sn_params, 1, function(y) {
+    xi <- y["xi"]
+    omega <- y["omega"]
+    alpha <- y["alpha"]
+    delta <- alpha / sqrt(1 + alpha^2)
+
+    Ex <- xi + omega * delta * sqrt(2 / pi)
+    Vx <- omega^2 * (1 - 2 * delta^2 / pi)
+    SDx <- sqrt(Vx)
+    qq <- qsnorm_fast(
+      c(0.025, 0.25, 0.5, 0.75, 0.975),
+      xi = xi,
+      omega = omega,
+      alpha = alpha
+    )
+
+    x <- seq(Ex - 4 * SDx, Ex + 4 * SDx, length.out = 200)
+    fx <- dsnorm(x, xi = xi, omega = omega, alpha = alpha)
+
+    xmax <- optimize(
+      function(x) dsnorm(x, xi = xi, omega = omega, alpha = alpha),
+      interval = range(x),
+      maximum = TRUE
+    )$maximum
+
     res <- c(Ex, SDx, qq, xmax)
-    names(res) <- c("Mean", "SD", "2.5%", "50%", "97.5%", "Mode")
+    names(res) <- c("Mean", "SD", "2.5%", "25%", "50%", "75%", "97.5%", "Mode")
 
     list(
       summary = res,
-      pdf_data = data.frame(x = dens$x, y = dens$y)
+      pdf_data = data.frame(x = x, y = fx),
+      sn_params = c(
+        xi = xi,
+        omega = omega,
+        alpha = alpha,
+        logC = NA_real_,
+        k = NA_real_,
+        rmse = NA_real_,
+        nmad = NA_real_,
+        gamma1 = NA_real_
+      )
     )
   })
-}
+} # nocov end
 
-sample_covariances_fit_sn <- function(
-  theta,
-  Sigma_theta,
-  pt,
-  K,
-  nsamp = 10000
-) {
+sample_covariances_fit_sn <- function(x_samp, pt) {
   pt_cov_rows <- grep("cov", pt$mat)
   pt_cov_free_rows <- pt_cov_rows[pt$free[pt_cov_rows] > 0]
   idxcov <- pt$free[pt_cov_free_rows]
 
-  theta_samp <- mvtnorm::rmvnorm(nsamp, mean = theta, sigma = Sigma_theta)
-  if (!all(dim(K) == 0)) {
-    theta_samp <- t(apply(theta_samp, 1, function(pars) as.numeric(K %*% pars)))
-  }
-  x_samp <- apply(theta_samp, 1, pars_to_x, pt = pt)
-  cov_samp <- x_samp[idxcov, , drop = FALSE]
-  rownames(cov_samp) <- pt$names[pt_cov_free_rows]
+  cov_samp <- x_samp[, idxcov, drop = FALSE]
+  colnames(cov_samp) <- pt$names[pt_cov_free_rows]
 
-  sn_params <- apply(cov_samp, 1, fit_skew_normal_samp)
+  sn_params <- apply(cov_samp, 2, fit_skew_normal_samp)
   sn_params <- do.call("rbind", lapply(sn_params, unlist))
 
   # FIXME: Repeated code in post_marg_skewnorm
@@ -314,7 +363,7 @@ sample_covariances_fit_sn <- function(
     Vx <- omega^2 * (1 - 2 * delta^2 / pi)
     SDx <- sqrt(Vx)
     qq <- qsnorm_fast(
-      c(0.025, 0.5, 0.975),
+      c(0.025, 0.25, 0.5, 0.75, 0.975),
       xi = xi,
       omega = omega,
       alpha = alpha
@@ -330,50 +379,47 @@ sample_covariances_fit_sn <- function(
     )$maximum
 
     res <- res <- c(Ex, SDx, qq, xmax)
-    names(res) <- c("Mean", "SD", "2.5%", "50%", "97.5%", "Mode")
+    names(res) <- c("Mean", "SD", "2.5%", "25%", "50%", "75%", "97.5%", "Mode")
 
     list(
       summary = res,
-      pdf_data = data.frame(x = x, y = fx)
+      pdf_data = data.frame(x = x, y = fx),
+      sn_params = c(
+        xi = xi,
+        omega = omega,
+        alpha = alpha,
+        logC = NA_real_,
+        k = NA_real_,
+        rmse = NA_real_,
+        nmad = NA_real_,
+        gamma1 = NA_real_
+      )
     )
   })
 }
 
 get_dic <- function(
+  x_samp,
   theta_star,
-  Sigma_theta,
-  method,
-  approx_data,
   pt,
   lavmodel,
-  lavsamplestats,
   loglik,
-  nsamp = 250,
   cli_env = NULL
 ) {
-  x <- sample_params(
-    theta_star = theta_star,
-    Sigma_theta = Sigma_theta,
-    method = method,
-    approx_data = approx_data,
-    pt = pt,
-    lavmodel = lavmodel,
-    nsamp = nsamp,
-    return_theta = FALSE
-  )
-
   if (lavmodel@ceq.simple.only) {
+    # nocov start
     xhat <- pars_to_x(as.numeric(lavmodel@ceq.simple.K %*% theta_star), pt)
   } else {
+    # nocov end
     xhat <- pars_to_x(theta_star, pt)
   }
 
   Dhat <- -2 * loglik(xhat)
-  Dbar_samp <- sapply(seq_len(nrow(x)), function(i) {
+  Dbar_samp <- sapply(seq_len(nrow(x_samp)), function(i) {
     if (!is.null(cli_env)) {
-      cli::cli_progress_update(.envir = cli_env)
+      cli_progress_update(.envir = cli_env)
     }
-    xx <- x[i, ]
+    xx <- x_samp[i, ]
     -2 * loglik(xx)
   })
   Dbar <- mean(Dbar_samp[Dbar_samp < 1e40])
@@ -383,27 +429,7 @@ get_dic <- function(
 }
 
 
-get_thetaparamerization_deltas <- function(
-  theta_star,
-  Sigma_theta,
-  method,
-  approx_data,
-  pt,
-  lavmodel,
-  lavsamplestats,
-  nsamp = 250
-) {
-  x_samp <- sample_params(
-    theta_star = theta_star,
-    Sigma_theta = Sigma_theta,
-    method = method,
-    approx_data = approx_data,
-    pt = pt,
-    lavmodel = lavmodel,
-    nsamp = nsamp,
-    return_theta = FALSE
-  )
-
+get_thetaparamerization_deltas <- function(x_samp, lavmodel) {
   delta_samp <- apply(x_samp, 1, function(xx) {
     lavmodel_x <- lavaan::lav_model_set_parameters(lavmodel, xx)
     lavimplied <- lavaan::lav_model_implied(lavmodel_x, delta = FALSE)
@@ -416,19 +442,5 @@ get_thetaparamerization_deltas <- function(
     unlist(delta_list)
   })
 
-  # FIXME: Repeated code in post_marg_sampling
-  apply(delta_samp, 1, function(y) {
-    Ex <- mean(y)
-    SDx <- sd(y)
-    qq <- quantile(y, probs = c(0.025, 0.5, 0.975))
-    dens <- density(y)
-    xmax <- dens$x[which.max(dens$y)]
-    res <- c(Ex, SDx, qq, xmax)
-    names(res) <- c("Mean", "SD", "2.5%", "50%", "97.5%", "Mode")
-
-    list(
-      summary = res,
-      pdf_data = data.frame(x = dens$x, y = dens$y)
-    )
-  })
+  apply(delta_samp, 1, summarise_samples)
 }

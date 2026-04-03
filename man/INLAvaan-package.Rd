@@ -8,7 +8,7 @@
 \description{
 \if{html}{\figure{logo.png}{options: style='float: right' alt='logo' width='120'}}
 
-Implements approximate Bayesian inference for Structural Equation Models (SEM) using a custom adaptation of the Integrated Nested Laplace Approximation as described in Rue et al. (2009) \doi{10.1111/j.1467-9868.2008.00700.x}. Provides a computationally efficient alternative to Markov Chain Monte Carlo (MCMC) for Bayesian estimation, allowing users to fit latent variable models using the 'lavaan' syntax.
+Implements approximate Bayesian inference for Structural Equation Models (SEM) using a custom adaptation of the Integrated Nested Laplace Approximation (Rue et al., 2009) \doi{10.1111/j.1467-9868.2008.00700.x} as described in Jamil and Rue (2026a) \doi{10.48550/arXiv.2603.25690}. Provides a computationally efficient alternative to Markov Chain Monte Carlo (MCMC) for Bayesian estimation, allowing users to fit latent variable models using the 'lavaan' syntax. See also the companion paper on implementation and workflows, Jamil and Rue (2026b) \doi{10.48550/arXiv.2604.00671}.
 }
 \section{Main features}{
 
@@ -26,6 +26,18 @@ Supports advanced 'lavaan' syntax features, including:
 \item Equality constraints
 \item Defined parameters (e.g., \verb{:=} operator for indirect effects)
 \item Flexible prior specifications
+}
+}
+
+\section{Methods for \code{INLAvaan} objects}{
+
+After fitting a model an \link{INLAvaan} object is returned. The following S4
+methods are available. See \linkS4class{INLAvaan} for the class definition.
+\itemize{
+\item Summaries and parameter estimates: \code{\link[=summary]{summary()}}, \code{\link[=coef]{coef()}}, \code{\link[=vcov]{vcov()}}, \code{\link[=standardisedsolution]{standardisedsolution()}}
+\item Fit assessment and model comparison: \code{\link[=fitmeasures]{fitmeasures()}}, \code{\link[=bfit_indices]{bfit_indices()}}, \code{\link[=compare]{compare()}}, \code{\link[=diagnostics]{diagnostics()}}, \code{\link[=timing]{timing()}}
+\item Posterior inference and simulation: \code{\link[=predict]{predict()}}, \code{\link[=sampling]{sampling()}}, \code{\link[=simulate]{simulate()}}
+\item Visualisation: \code{\link[=plot]{plot()}}
 }
 }
 
