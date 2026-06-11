@@ -1,7 +1,7 @@
 Type: Package
 Package: INLAvaan
 Title: Approximate Bayesian Latent Variable Analysis
-Version: 0.2.4
+Version: 0.2.5
 Authors@R: c(
     person("Haziq", "Jamil", , "haziq.jamil@gmail.com", role = c("aut", "cre", "cph"),
            comment = c(ORCID = "0000-0003-3298-1010")),
@@ -23,7 +23,8 @@ License: GPL (>= 3)
 URL: https://inlavaan.haziqj.ml/, https://github.com/haziqj/INLAvaan
 BugReports: https://github.com/haziqj/INLAvaan/issues
 Depends: R (>= 3.5)
-Imports: cli, graphics, lavaan, methods, parallel, stats, utils
+Imports: cli, graphics, lavaan (>= 0.6-19), methods, parallel, stats,
+        utils
 Suggests: blavaan, ggplot2, knitr, lme4, numDeriv, qrng, quarto, sn,
         testthat (>= 3.0.0), ucminf
 VignetteBuilder: quarto
@@ -31,8 +32,8 @@ Config/Needs/website: rmarkdown
 Config/testthat/edition: 3
 Encoding: UTF-8
 RoxygenNote: 7.3.3
-NeedsCompilation: no
-Packaged: 2026-04-02 10:56:20 UTC; haziqj
+NeedsCompilation: yes
+Packaged: 2026-06-11 08:47:58 UTC; haziqj
 Author: Haziq Jamil [aut, cre, cph] (ORCID:
     <https://orcid.org/0000-0003-3298-1010>),
   Håvard Rue [ctb] (ORCID: <https://orcid.org/0000-0002-0222-1881>,
@@ -40,4 +41,4 @@ Author: Haziq Jamil [aut, cre, cph] (ORCID:
   Alvin Bong [ctb] (Initial site build)
 Maintainer: Haziq Jamil <haziq.jamil@gmail.com>
 Repository: CRAN
-Date/Publication: 2026-04-03 02:20:22 UTC
+Date/Publication: 2026-06-11 09:10:02 UTC
