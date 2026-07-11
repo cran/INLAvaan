@@ -9,11 +9,25 @@
 #' @inheritParams lavaan::lavaan
 #' @inheritParams lavaan::simulateData
 #' @inheritParams blavaan::blavaan
+#' @param model.type The lavaan entry point used to fit `model`: `"cfa"`,
+#'   `"sem"`, or `"growth"` (matching lavaan's model-specific wrapper
+#'   functions), or `"lavaan"` for the general-purpose interface. Set
+#'   automatically by [acfa()], [asem()], and [agrowth()]; documented
+#'   explicitly here because lavaan >= 0.7-1 renamed the corresponding
+#'   `simulateData()` argument to `model_type`, so it can no longer be
+#'   inherited from there.
 #'
 #' @param dp Default prior distributions for the different types of model
 #'   parameters; a named character vector as returned by [priors_for()].
-#' @param test Character indicating whether to compute posterior fit indices.
-#'   Defaults to "standard". Change to "none" to skip these computations.
+#' @param test Character indicating which post-estimation quantities to
+#'   compute. Defaults to "standard": posterior fit indices (PPP and DIC),
+#'   plus -- for models supported by the casewise machinery and fitted with
+#'   a mean structure -- the WAIC (reusing the fit's posterior draws, when
+#'   `nsamp >= 100`) and a full leave-one-out cross-validation whenever its
+#'   predicted serial cost is within a 10-second budget; both are stored
+#'   with the fit (see [loo()] and [waic()]). "none" skips all of these.
+#'   Include "loo" (e.g. `test = c("standard", "loo")`, or `test = "loo"`
+#'   alone) to force the full LOO regardless of the budget.
 #' @param vb_correction Logical indicating whether to apply a variational Bayes
 #'   correction for the posterior mean vector of estimates. Defaults to `TRUE`.
 #' @param marginal_method The method for approximating the marginal posterior
@@ -56,6 +70,12 @@
 #'   (BFGS).
 #' @param numerical_grad Logical indicating whether to use numerical gradients
 #'   for the optimisation. Defaults to `FALSE` to use analytical gradients.
+#' @param start Optional numeric vector of starting values for the optimiser,
+#'   given as a full vector of free parameters in the internal (unconstrained)
+#'   parameterisation. Mainly for internal use by [update()], which warm-starts
+#'   mode-finding from a previous fit's posterior mode; supplying a hand-built
+#'   vector requires knowledge of the internal parameter ordering. Its length
+#'   must equal the number of free parameters or an error is raised.
 #' @param cores Integer or `NULL`. Number of cores for parallel marginal
 #'   fitting. When `NULL` (default), serial execution is used unless the number
 #'   of free parameters exceeds 120, in which case parallelisation is enabled
@@ -94,14 +114,18 @@ inlavaan <- function(
   add_priors = TRUE,
   optim_method = c("nlminb", "ucminf", "optim"),
   numerical_grad = FALSE,
+  start = NULL,
   cores = NULL,
   ...
 ) {
+  mc <- match.call()
+  mc$start <- NULL # warm start is transient; keep it out of the recorded call
   start.time0 <- proc.time()[3]
   timing <- list(start.time = start.time0)
 
   ## ----- Check arguments -----------------------------------------------------
-  if (!is.null(cores)) { # nocov start
+  if (!is.null(cores)) {
+    # nocov start
     cores <- as.integer(cores)
     if (is.na(cores) || cores < 1L) cores <- 1L
   } # nocov end
@@ -115,6 +139,13 @@ inlavaan <- function(
   if (isTRUE(debug)) {
     verbose <- TRUE
   }
+  # "loo" is INLAvaan-specific: strip it before `test` reaches lavaan
+  do_loo <- "loo" %in% test
+  test <- setdiff(test, "loo")
+  if (length(test) == 0L) {
+    test <- "none"
+  }
+
   lavargs <- list(...)
   lavargs$model <- model
   lavargs$data <- data
@@ -125,9 +156,25 @@ inlavaan <- function(
   lavargs$test <- test
 
   if ("estimator" %in% names(lavargs)) {
-    if (!(lavargs$estimator %in% c("ML", "PML"))) { # nocov
+    if (!(lavargs$estimator %in% c("ML", "PML"))) {
+      # nocov
       cli_abort("Only 'ML' and 'PML' estimators are supported currently.")
     }
+  }
+
+  # Two-level models cannot drop the mean structure: the between-level
+  # statistics are the cluster means, and the marginalised treatment of
+  # covariance-only analyses is single-level (and multigroup) only. lavaan
+  # force-enables meanstructure for multilevel data anyway; if the user
+  # *explicitly* asked for FALSE, say so rather than silently complying.
+  if (isFALSE(lavargs$meanstructure) && !is.null(lavargs$cluster)) {
+    cli_warn(c(
+      "Two-level models require a mean structure; fitting with
+       {.code meanstructure = TRUE}.",
+      "i" = "See {.code vignette(\"meanstructure\", package = \"INLAvaan\")}
+       for how INLAvaan treats mean structures."
+    ))
+    lavargs$meanstructure <- TRUE
   }
 
   ## ----- Initialise lavaan object --------------------------------------------
@@ -149,6 +196,39 @@ inlavaan <- function(
   ceq.simple <- lavmodel@ceq.simple.only
   ceq.K <- lavmodel@ceq.simple.K # used to pack params/grads
 
+  # lavaan < 0.7-1.2707 computes a slightly inexact two-level FIML gradient
+  # for cases fully missing on the within-level variables: it keeps such
+  # cases but its gradient kernel mishandles the zero-observed pattern, so
+  # the optimiser uses a slightly wrong gradient (fixed upstream in lavaan
+  # PR #581). loo()/waic() are unaffected (the cluster kernels drop these
+  # rows), but the fitted estimates may be mildly off, so warn on affected
+  # lavaan versions only. Drop the version gate and this block once the
+  # minimum supported lavaan carries the fix.
+  if (
+    is_multilevel(lavdata) &&
+      isTRUE(lavsamplestats@missing.flag) &&
+      utils::packageVersion("lavaan") < "0.7.1.2707"
+  ) {
+    Xw <- lavdata@X[[1L]]
+    bidx <- lavdata@Lp[[1L]]$between.idx[[2L]]
+    wcols <- if (length(bidx) > 0L) {
+      seq_len(ncol(Xw))[-bidx]
+    } else {
+      seq_len(ncol(Xw))
+    }
+    n_fm <- sum(rowSums(!is.na(Xw[, wcols, drop = FALSE])) == 0L)
+    if (n_fm > 0L) {
+      cli_warn(c(
+        "{n_fm} case{?s} {?is/are} fully missing on the within-level
+         variables.",
+        "i" = "This version of lavaan computes a slightly inexact two-level
+         FIML gradient for such cases, so the estimates may be mildly
+         affected; update lavaan or remove these cases. {.fn loo} and
+         {.fn waic} handle them correctly."
+      ))
+    }
+  }
+
   # Partable and check for equality constraints
   pt <- inlavaanify_partable(lavpartable, dp, lavdata, lavoptions)
   PTFREEIDX <- which(pt$free > 0L)
@@ -161,6 +241,19 @@ inlavaan <- function(
 
   # Cache partable for prior logdens and grad
   prior_cache <- prepare_priors_for_optim(pt)
+
+  # Saturated-means fast path (see saturated_mean_idx): along the free
+  # intercept axes the posterior is exactly Gaussian and block-diagonal at
+  # the mode, so the Hessian block is analytic and the marginal scans are
+  # redundant for those coordinates.
+  fastpath <- saturated_mean_idx(
+    pt,
+    lavmodel,
+    lavsamplestats,
+    lavdata,
+    ceq.simple
+  )
+  fp_idx <- if (is.null(fastpath)) integer(0) else fastpath$idx
 
   ## ----- Prep work for approximation -----------------------------------------
   joint_lp <- function(pars) {
@@ -239,12 +332,31 @@ inlavaan <- function(
 
   ## ----- Start optimisation --------------------------------------------------
   if (isTRUE(verbose)) {
-    cli_progress_step("Finding posterior mode.")
+    optim_stage <- "Mode finding and Hessian computation"
+    cli_progress_step(
+      "{optim_stage}.",
+      msg_done = "Posterior mode and Hessian."
+    )
   }
 
   ob <- function(x) -1 * joint_lp(x)
   gr <- if (isTRUE(numerical_grad)) NULL else function(x) -1 * joint_lp_grad(x)
   parstart <- pt$parstart[PTFREEIDX]
+
+  # Warm start: `start` is a full vector of free parameters in the internal
+  # (unconstrained) parameterisation, e.g. the posterior mode of an earlier
+  # fit reused by `update()`. Only valid when the parameter structure matches.
+  if (!is.null(start)) {
+    if (length(start) != length(parstart)) {
+      cli_abort(c(
+        "{.arg start} has length {length(start)} but the model has
+         {length(parstart)} free parameter{?s}.",
+        "i" = "{.arg start} must be a full vector of free parameters in the
+               internal (unconstrained) parameterisation."
+      ))
+    }
+    parstart <- as.numeric(start)
+  }
 
   if (optim_method == "nlminb") {
     opt <- nlminb(
@@ -255,15 +367,36 @@ inlavaan <- function(
     )
     theta_star <- opt$par
     if (isTRUE(verbose)) {
-      cli_progress_step("Computing the Hessian.")
+      optim_stage <- "Computing the Hessian"
+      cli_progress_update()
     }
     if (isTRUE(numerical_grad)) {
       H_neg <- fast_hessian(ob, theta_star)
+    } else if (length(fp_idx)) {
+      # assemble in blocks: finite differences over the covariance columns
+      # only; the intercept block is analytic (n Sigma^{-1} restricted to
+      # the free-intercept variables, plus the prior precision) and the
+      # cross block is exactly zero at the mode
+      cc <- setdiff(seq_len(m), fp_idx)
+      H_neg <- fast_jacobian(
+        function(x) -1 * joint_lp_grad(x),
+        theta_star,
+        cols = cc
+      )
+      H_neg[fp_idx, ] <- 0
+      Sg_hat <- lavaan::lav_model_implied(
+        lavaan::lav_model_set_parameters(lavmodel, pars_to_x(theta_star, pt))
+      )$cov[[1L]]
+      sp <- fastpath$sigma_pos
+      H_neg[fp_idx, fp_idx] <- n *
+        chol2inv(chol(Sg_hat))[sp, sp, drop = FALSE] +
+        diag(fastpath$prec, length(fp_idx))
     } else {
       # H_neg <- numDeriv::jacobian(function(x) -1 * joint_lp_grad(x), theta_star)
       H_neg <- fast_jacobian(function(x) -1 * joint_lp_grad(x), theta_star)
     }
-  } else if (optim_method == "ucminf") { # nocov start
+  } else if (optim_method == "ucminf") {
+    # nocov start
     if (!requireNamespace("ucminf", quietly = TRUE)) {
       cli_abort(
         "The `ucminf` package is required for this optimization method. Please install it using `install.packages('ucminf')`."
@@ -279,7 +412,8 @@ inlavaan <- function(
     )
     theta_star <- opt$par
     H_neg <- opt$hessian
-  } else { # nocov end
+  } else {
+    # nocov end
     opt <- stats::optim(
       par = parstart,
       fn = ob,
@@ -310,12 +444,12 @@ inlavaan <- function(
 
   # Derivatives at optima
   opt$dx <- fast_grad(function(x) -1 * joint_lp(x), theta_star) # fd grad
-  opt$dx_analytic <- -1 * joint_lp_grad(theta_star)             # analytic grad
+  opt$dx_analytic <- -1 * joint_lp_grad(theta_star) # analytic grad
   if (isTRUE(debug)) {
     tab <- data.frame(
       analytic = round(opt$dx_analytic, 6),
-      fd       = round(opt$dx, 6),
-      diff     = round(opt$dx_analytic - opt$dx, 6),
+      fd = round(opt$dx, 6),
+      diff = round(opt$dx_analytic - opt$dx, 6),
       row.names = parnames
     )
     cli::cli_rule(left = "{.strong Gradient check at posterior mode}")
@@ -451,7 +585,8 @@ inlavaan <- function(
     } else {
       eff_cores <- cores
     }
-    if (eff_cores > 1L && .Platform$OS.type == "windows") { # nocov start
+    if (eff_cores > 1L && .Platform$OS.type == "windows") {
+      # nocov start
       cli_alert_warning(
         "Parallel marginal fitting uses forking and is not available on
         Windows. Falling back to serial."
@@ -485,7 +620,8 @@ inlavaan <- function(
         cores = eff_cores,
         verbose = verbose,
         msg_serial = "Calibrating {j}/{m} asymmetric Gaussian{?s}.",
-        msg_parallel = "Calibrating {done}/{m} asymmetric Gaussians ({cores}\U00D7)."
+        msg_parallel = "Calibrating {done}/{m} asymmetric Gaussians ({cores}\U00D7).",
+        msg_done = "Calibrate {m}/{m} asymmetric Gaussian{?s}."
       )
       approx_data <- do.call(what = "rbind", approx_data)
 
@@ -503,6 +639,24 @@ inlavaan <- function(
       }
     } else if (marginal_method == "skewnorm") {
       obtain_approx_data <- function(j) {
+        if (j %in% fp_idx) {
+          # saturated-means fast path: this axis is exactly Gaussian, and
+          # the scan would reproduce the Laplace marginal to numerical
+          # precision -- emit it directly
+          return(list(
+            fit = c(
+              xi = theta_star[j],
+              omega = sqrt(Sigma_theta[j, j]),
+              alpha = 0,
+              logC = 0,
+              k = 0,
+              rmse = 0,
+              nmad = 0,
+              gamma1 = 0
+            ),
+            visual_debug = NULL
+          ))
+        }
         z <- seq(-4, 4, length = sn_fit_ngrid)
         yync <- yy <- numeric(length(z))
         gamma1j <- get_gamma1(j)
@@ -545,7 +699,8 @@ inlavaan <- function(
         cores = eff_cores,
         verbose = verbose,
         msg_serial = "Fitting {j}/{m} skew-normal marginal{?s}.",
-        msg_parallel = "Fitting {done}/{m} skew-normal marginals ({cores}\U00D7)."
+        msg_parallel = "Fitting {done}/{m} skew-normal marginals ({cores}\U00D7).",
+        msg_done = "Fit {m}/{m} skew-normal marginal{?s}."
       )
 
       approx_data <- do.call(what = "rbind", lapply(all_results, `[[`, "fit"))
@@ -597,28 +752,41 @@ inlavaan <- function(
   R_star <- NULL
   if (marginal_method == "skewnorm" && isTRUE(samp_copula)) {
     if (isTRUE(verbose)) {
-      cli_progress_step("Adjusting copula correlations (NORTA).")
+      cli_progress_step(
+        "Adjusting copula correlations (NORTA).",
+        msg_done = "Adjust copula correlations (NORTA)."
+      )
     }
     R_star <- norta_adjust_R(cov2cor(Sigma_theta), approx_data)
   }
   timing <- add_timing(timing, "norta")
 
   ## ----- Draw posterior samples (once) ---------------------------------------
-  has_extra_samp_work <-
-    (sum(pt$free > 0 & grepl("cov", pt$mat)) > 0 &&
-      marginal_method != "sampling") ||
+  # Draw-based summaries: covariances, defined (:=) and delta (~*~) parameters,
+  # or (for the pure sampling method) every marginal
+  needs_draw_summaries <-
+    marginal_method == "sampling" ||
+    sum(pt$free > 0 & grepl("cov", pt$mat)) > 0 ||
     any(pt$op == ":=") ||
-    any(pt$op == "~*~") ||
-    test != "none"
+    any(pt$op == "~*~")
+  has_extra_samp_work <- needs_draw_summaries || test != "none"
   samp_env <- NULL
   if (isTRUE(verbose)) {
-    samp_msg <- if (has_extra_samp_work) {
-      "Posterior sampling and summarising."
+    samp_stage <- if (has_extra_samp_work) {
+      "Posterior sampling and summarising"
     } else {
-      "Drawing posterior samples."
+      "Drawing posterior samples"
     }
+    # Rewritten at the end of the block with an inventory of what the draws
+    # were used for
+    samp_done <- paste0(samp_stage, ".")
     samp_env <- environment()
-    cli_progress_step(samp_msg, spinner = TRUE, .envir = samp_env)
+    cli_progress_step(
+      "{samp_stage}.",
+      msg_done = "{samp_done}",
+      spinner = TRUE,
+      .envir = samp_env
+    )
   }
   samp <- sample_params(
     theta_star = theta_star_vbc,
@@ -652,7 +820,11 @@ inlavaan <- function(
       y = parnames
     )
   )
-  summ <- cbind(summ, kld = vb$kld, vb_shift_sigma = vb$correction / sqrt(diag(Sigma_theta)))
+  summ <- cbind(
+    summ,
+    kld = vb$kld,
+    vb_shift_sigma = vb$correction / sqrt(diag(Sigma_theta))
+  )
 
   pdf_data <- lapply(postmargres, function(x) x$pdf_data)
   names(pdf_data) <- parnames
@@ -679,6 +851,9 @@ inlavaan <- function(
       for (cov_name in names(samp_cov)) {
         tmp_new_summ <- samp_cov[[cov_name]]$summary
         summ[cov_name, names(tmp_new_summ)] <- tmp_new_summ
+        # keep the coefficient vector on the covariance scale too; the
+        # per-parameter marginal mean is on the correlation (tanh) scale
+        coefs[cov_name] <- tmp_new_summ[["Mean"]]
         pdf_data[[cov_name]] <- samp_cov[[cov_name]]$pdf_data
       }
     }
@@ -687,11 +862,13 @@ inlavaan <- function(
 
   # Defined parameters
   if (any(pt$op == ":=")) {
-    if (marginal_method == "skewnorm" && isTRUE(sn_fit_sample)) { # nocov start
+    if (marginal_method == "skewnorm" && isTRUE(sn_fit_sample)) {
+      # nocov start
       defpars <- get_defpars_fit_sn(x_samp, pt)
       sn_rows <- do.call(rbind, lapply(defpars, `[[`, "sn_params"))
       approx_data <- rbind(approx_data, sn_rows)
-    } else { # nocov end
+    } else {
+      # nocov end
       defpars <- get_defpars(x_samp, pt)
     }
 
@@ -718,6 +895,10 @@ inlavaan <- function(
 
   ## ----- Compute ppp and dic -------------------------------------------------
   if (test != "none") {
+    if (isTRUE(verbose)) {
+      samp_stage <- "Computing fit indices (PPP/DIC)"
+      cli_progress_update(.envir = samp_env)
+    }
     ppp <- get_ppp(
       x_samp = x_samp,
       lavmodel = lavmodel,
@@ -748,6 +929,110 @@ inlavaan <- function(
   }
   timing <- add_timing(timing, "test")
 
+  ## ----- Fit-time LOO and WAIC -------------------------------------------------
+  # Minimal internal view of the fit for the casewise machinery
+  int_fit <- list(
+    partable = pt,
+    lavmodel = lavmodel,
+    lavdata = lavdata,
+    lavsamplestats = lavsamplestats,
+    theta_star = as.numeric(theta_star_vbc),
+    Sigma_theta = Sigma_theta,
+    marginal_method = marginal_method,
+    approx_data = approx_data,
+    nsamp = nsamp,
+    R_star = R_star
+  )
+  # The default path (test = "standard") computes LOO/WAIC only for models
+  # the casewise kernels support, quietly, and (for LOO) only when the
+  # predicted serial cost fits a 10 s budget. An explicit "loo" in `test`
+  # always computes the full LOO.
+  casewise_ok <- tryCatch(
+    {
+      suppressWarnings(check_loo_model(int_fit))
+      TRUE
+    },
+    error = function(e) FALSE
+  )
+
+  loo_res <- NULL
+  if (isTRUE(do_loo) || (test != "none" && casewise_ok)) {
+    if (isTRUE(verbose)) {
+      samp_stage <- "Computing Taylor LOO"
+      cli_progress_update(.envir = samp_env)
+    }
+    loo_res <- tryCatch(
+      inlav_loo(
+        int = int_fit,
+        eff_cores = resolve_loo_cores(cores),
+        verbose = FALSE,
+        max_seconds = if (isTRUE(do_loo)) Inf else 10
+      ),
+      inlavaan_loo_budget = function(e) {
+        if (isTRUE(verbose)) {
+          cli_alert_info(
+            "Skipping fit-time LOO (predicted cost exceeds 10 s); compute it
+             post hoc with {.fn loo} or {.fn add_loo}."
+          )
+        }
+        NULL
+      },
+      error = function(e) {
+        if (isTRUE(do_loo)) {
+          cli_warn(c(
+            "Skipping the fit-time LOO computation.",
+            "x" = conditionMessage(e)
+          ))
+        }
+        NULL
+      }
+    )
+    timing <- add_timing(timing, "loo")
+  }
+
+  # WAIC from the draws already produced above, so only the casewise pass is
+  # paid; skipped for small nsamp, where p_waic estimates are meaningless.
+  # The reliability warning is left to print/explicit waic() calls.
+  waic_res <- NULL
+  if (test != "none" && casewise_ok && nsamp >= 100L) {
+    if (isTRUE(verbose)) {
+      samp_stage <- "Computing WAIC"
+      cli_progress_update(.envir = samp_env)
+    }
+    waic_res <- tryCatch(
+      suppressWarnings(
+        waic_from_draws(
+          int_fit,
+          x_samp,
+          eff_cores = resolve_loo_cores(cores)
+        )
+      ),
+      error = function(e) NULL
+    )
+    timing <- add_timing(timing, "waic")
+  }
+
+  if (isTRUE(verbose)) {
+    # Close the sampling step with an overview; the specific fit measures
+    # computed are listed on a separate info line below
+    fit_measures <- c(
+      if (!is.null(ppp)) c("PPP", "DIC"),
+      if (!is.null(loo_res)) "LOO",
+      if (!is.null(waic_res)) "WAIC"
+    )
+    samp_done <- if (needs_draw_summaries || length(fit_measures)) {
+      paste0("Summarise ", nsamp, " posterior draws.")
+    } else {
+      paste0("Draw ", nsamp, " posterior samples.")
+    }
+    cli_progress_done(.envir = samp_env)
+    if (length(fit_measures)) {
+      cli_alert_info(
+        paste0("Fit measures: ", paste(fit_measures, collapse = ", "), ".")
+      )
+    }
+  }
+
   ## ----- Output --------------------------------------------------------------
   out <- list(
     coefficients = coefs,
@@ -755,6 +1040,8 @@ inlavaan <- function(
     DIC = dic_list,
     summary = summ,
     ppp = ppp,
+    loo = loo_res,
+    waic = waic_res,
     optim_method = optim_method,
     marginal_method = marginal_method,
     theta_star_novbc = as.numeric(theta_star),
@@ -773,9 +1060,15 @@ inlavaan <- function(
     opt = opt,
     timing = timing[-1], # remove start.time
     visual_debug = visual_debug,
-    vb = vb
+    vb = vb,
+    call = mc,
+    version = as.character(utils::packageVersion("INLAvaan"))
   )
   class(out) <- "inlavaan_internal"
+
+  # Warn (once, consolidated) if the convergence/approximation diagnostics
+  # look off; see warn_fit_diagnostics() for the checks and thresholds
+  warn_fit_diagnostics(out)
 
   if (isTRUE(debug)) {
     return(out)

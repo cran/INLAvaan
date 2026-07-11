@@ -19,6 +19,14 @@ lavaan___lav_model_ey <- NULL
 lavaan___lav_mvnorm_loglik_samplestats <- NULL
 lavaan___lav_mvnorm_missing_loglik_samplestats <- NULL
 lavaan___lav_mvnorm_cluster_implied22l <- NULL
+lavaan___lav_model_delta <- NULL
+lavaan___lav_mvnorm_scores_mu_vech_sigma <- NULL
+lavaan___lav_mvnorm_cluster_loglik_samplestats_2l <- NULL
+lavaan___lav_mvnorm_cluster_dlogl_2l_samplestats <- NULL
+lavaan___lav_mvnorm_cluster_missing_loglik_samplestats_2l <- NULL
+lavaan___lav_mvnorm_cluster_missing_dlogl_2l_samplestats <- NULL
+lavaan___lav_data_missing_patterns <- NULL
+lavaan___lav_inspect_coef <- NULL
 
 # Aliases ordered new (lavaan >= 0.7) first, old (lavaan < 0.7) last, so on
 # new lavaan we bind the real function rather than its deprecated shim.
@@ -41,7 +49,33 @@ lavaan_internal_aliases <- list(
   lavaan___lav_mvnorm_cluster_implied22l = c(
     "lav_mvn_cl_implied22l",
     "lav_mvnorm_cluster_implied22l"
-  )
+  ),
+  lavaan___lav_model_delta = c("lav_model_delta", "computeDelta"),
+  lavaan___lav_mvnorm_scores_mu_vech_sigma = c(
+    "lav_mvn_sc_mu_sigma",
+    "lav_mvnorm_scores_mu_vech_sigma"
+  ),
+  lavaan___lav_mvnorm_cluster_loglik_samplestats_2l = c(
+    "lav_mvn_cl_loglik_samp_2l",
+    "lav_mvnorm_cluster_loglik_samplestats_2l"
+  ),
+  lavaan___lav_mvnorm_cluster_dlogl_2l_samplestats = c(
+    "lav_mvn_cl_dlogl_2l_samp",
+    "lav_mvnorm_cluster_dlogl_2l_samplestats"
+  ),
+  lavaan___lav_mvnorm_cluster_missing_loglik_samplestats_2l = c(
+    "lav_mvn_cl_mi_loglik_samp_2l",
+    "lav_mvnorm_cluster_missing_loglik_samplestats_2l"
+  ),
+  lavaan___lav_mvnorm_cluster_missing_dlogl_2l_samplestats = c(
+    "lav_mvn_cl_mi_dlogl_2l_samp",
+    "lav_mvnorm_cluster_missing_dlogl_2l_samplestats"
+  ),
+  lavaan___lav_data_missing_patterns = c(
+    "lav_data_mi_patterns",
+    "lav_data_missing_patterns"
+  ),
+  lavaan___lav_inspect_coef = c("lav_inspect_coef", "lav_object_inspect_coef")
 )
 
 resolve_lavaan_internals <- function(ns) {

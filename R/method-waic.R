@@ -1,0 +1,172 @@
+#' Widely Applicable Information Criterion for INLAvaan Models
+#'
+#' Computes the WAIC of a fitted [INLAvaan] model from unit log-likelihoods
+#' evaluated over posterior draws. Single-level models are scored per
+#' subject; two-level models are scored per cluster by default, matching the
+#' units used by [loo()]. For a two-level model `type = "loso"` instead
+#' scores the *conditional* (leave-one-unit-out) WAIC; see Details.
+#'
+#' @details
+#' For each posterior draw \eqn{\theta_s} (drawn with the same copula
+#' sampler used for the fit's posterior summaries) and unit \eqn{u}, the
+#' log-likelihood \eqn{\log p(y_u \mid \theta_s)} is evaluated; then
+#' \eqn{\mathrm{lpd}_u = \log \tfrac{1}{S}\sum_s p(y_u \mid \theta_s)},
+#' \eqn{p_{\mathrm{waic},u} = \mathrm{var}_s \log p(y_u \mid \theta_s)}, and
+#' \eqn{\mathrm{elpd}_{\mathrm{waic}} = \sum_u (\mathrm{lpd}_u -
+#' p_{\mathrm{waic},u})} with \eqn{\mathrm{WAIC} = -2\,
+#' \mathrm{elpd}_{\mathrm{waic}}}. Unlike [loo()], this is a sampling-based
+#' estimate: results vary with the random draws, and units with
+#' \eqn{p_{\mathrm{waic},u} > 0.4} trigger a reliability warning (also
+#' annotated when printing). The same model restrictions as [loo()] apply,
+#' and so does the flavour rule: fits with `fixed.x = TRUE` are scored
+#' conditionally on the exogenous covariates, fits with `fixed.x = FALSE`
+#' jointly (see [loo()]).
+#'
+#' **Marginal vs conditional WAIC (two-level models).** The default
+#' per-cluster scoring is the *marginal* WAIC, which corresponds to
+#' leave-one-cluster-out cross-validation -- prediction for a *new* cluster.
+#' Setting `type = "loso"` scores the *conditional* WAIC, corresponding to
+#' leave-one-unit-out -- prediction for a new observation within an
+#' *observed* cluster (each row contributes the conditional density of its
+#' observed entries given the rest of its cluster). The two answer different
+#' questions and are easily conflated (Merkle, Furr & Rabe-Hesketh, 2019);
+#' the per-cluster marginal is the usual model-comparison target, so it is
+#' the default, and `type = "loso"` warns. This matches `loo(type = "loso")`
+#' -- the two compute the same estimand by sampling and by Taylor expansion.
+#'
+#' Under the default `test = "standard"`, [inlavaan()] computes the WAIC at
+#' fit time by reusing the posterior draws the fit already produced (when
+#' the model is supported and `nsamp >= 100`), and
+#' stores it with the fit: `waic(fit)` then returns the stored result when
+#' called with default arguments, and [fitmeasures()] reports `waic`,
+#' `p_waic`, `se_waic` as part of `"all"` for free. If the `loo` package is
+#' attached it masks this generic, but dispatch on INLAvaan objects
+#' continues to work.
+#'
+#' @param x A fitted [INLAvaan] object (or its `inlavaan_internal` list).
+#' @param type Unit type: `"auto"` (default) resolves to per-subject for
+#'   single-level models and per-cluster (marginal WAIC) for two-level
+#'   models. `"loso"` on a two-level model scores the conditional
+#'   (leave-one-unit-out) WAIC instead (with a warning; see Details);
+#'   `"loco"` cannot be forced on a model without clusters.
+#' @param units Optional integer vector of unit indices to score; defaults
+#'   to all units.
+#' @param nsamp Number of posterior draws. Defaults to the `nsamp` used when
+#'   fitting the model.
+#' @param cores Number of cores for evaluating draws. The default `NULL`
+#'   runs serially; parallelism must be requested explicitly.
+#' @param verbose Logical; print progress (default `FALSE`).
+#' @param ... Not used.
+#'
+#' @returns An object of class `inlavaan_waic`: a list with `per_unit`
+#'   (pointwise `lpd`, `p_waic`, `elpd_waic`, with the same `unit`/`group`
+#'   identification as [loo()]), `estimates` (matrix with rows
+#'   `elpd_waic`, `p_waic`, `waic` and columns `Estimate`, `SE`), `type`,
+#'   `n_units`, `n_groups`, and `nsamp`.
+#'
+#' @seealso [loo()], [fitmeasures()]
+#'
+#' @examples
+#' \donttest{
+#' HS.model <- "
+#'   visual  =~ x1 + x2 + x3
+#'   textual =~ x4 + x5 + x6
+#'   speed   =~ x7 + x8 + x9
+#' "
+#' utils::data("HolzingerSwineford1939", package = "lavaan")
+#' fit <- acfa(HS.model, HolzingerSwineford1939, meanstructure = TRUE)
+#' waic(fit)
+#' }
+#'
+#' @export
+waic <- function(x, ...) {
+  UseMethod("waic")
+}
+
+#' @rdname waic
+#' @exportS3Method waic INLAvaan
+waic.INLAvaan <- function(
+  x,
+  type = c("auto", "loso", "loco"),
+  units = NULL,
+  nsamp = NULL,
+  cores = NULL,
+  verbose = FALSE,
+  ...
+) {
+  waic.inlavaan_internal(
+    x@external$inlavaan_internal,
+    type = type,
+    units = units,
+    nsamp = nsamp,
+    cores = cores,
+    verbose = verbose
+  )
+}
+
+#' @rdname waic
+#' @exportS3Method waic inlavaan_internal
+waic.inlavaan_internal <- function(
+  x,
+  type = c("auto", "loso", "loco"),
+  units = NULL,
+  nsamp = NULL,
+  cores = NULL,
+  verbose = FALSE,
+  ...
+) {
+  type <- match.arg(type)
+  # Reuse the result stored at fit time when no argument deviates from the
+  # defaults
+  if (type == "auto" && is.null(units) && is.null(nsamp) && !is.null(x$waic)) {
+    if (isTRUE(verbose)) {
+      cli_alert_info("Returning the WAIC stored with the fit.")
+    }
+    return(x$waic)
+  }
+  inlav_waic(
+    int = x,
+    type = type,
+    units = units,
+    nsamp = nsamp,
+    eff_cores = resolve_loo_cores(cores),
+    verbose = verbose
+  )
+}
+
+#' @exportS3Method print inlavaan_waic
+print.inlavaan_waic <- function(x, ...) {
+  unit_word <- switch(x$type, loso = "subject", loco = "cluster")
+  cat("WAIC (INLAvaan)\n")
+  cat(
+    "Computed from ",
+    x$nsamp,
+    " posterior draws and ",
+    x$n_units,
+    " ",
+    unit_word,
+    if (x$n_units != 1L) "s",
+    if (!is.null(x$n_groups) && x$n_groups > 1L) {
+      paste0(" in ", x$n_groups, " groups")
+    },
+    "\n",
+    sep = ""
+  )
+  if (identical(x$flavour, "conditional")) {
+    cat("Scored conditionally on the exogenous covariates (fixed.x fit)\n")
+  }
+  cat("\n")
+  print(round(x$estimates, 1))
+  n_high <- sum(x$per_unit$p_waic > 0.4, na.rm = TRUE)
+  if (n_high > 0L) {
+    cat(
+      "\n",
+      n_high,
+      " unit",
+      if (n_high != 1L) "s",
+      " with p_waic > 0.4: the WAIC may be unreliable; prefer loo().\n",
+      sep = ""
+    )
+  }
+  invisible(x)
+}

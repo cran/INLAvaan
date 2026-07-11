@@ -25,6 +25,7 @@ inlavaan(
   add_priors = TRUE,
   optim_method = c("nlminb", "ucminf", "optim"),
   numerical_grad = FALSE,
+  start = NULL,
   cores = NULL,
   ...
 )
@@ -33,24 +34,33 @@ inlavaan(
 \item{model}{A description of the user-specified model. Typically, the model
     is described using the lavaan model syntax. See 
     \code{\link[lavaan]{model.syntax}} for more information. Alternatively, a
-    parameter table (eg. the output of the \code{lavParTable()} function) is also
+    parameter table (e.g., the output of the \code{lavParTable()} function) is also
     accepted.}
 
 \item{data}{An optional data frame containing the observed variables used in
     the model. If some variables are declared as ordered factors, lavaan will
     treat them as ordinal variables.}
 
-\item{model.type}{Set the model type: possible values
-    are \code{"cfa"}, \code{"sem"} or \code{"growth"}. This may affect
-    how starting values are computed, and may be used to alter the terminology
-    used in the summary output, or the layout of path diagrams that are
-    based on a fitted lavaan object.}
+\item{model.type}{The lavaan entry point used to fit \code{model}: \code{"cfa"},
+\code{"sem"}, or \code{"growth"} (matching lavaan's model-specific wrapper
+functions), or \code{"lavaan"} for the general-purpose interface. Set
+automatically by \code{\link[=acfa]{acfa()}}, \code{\link[=asem]{asem()}}, and \code{\link[=agrowth]{agrowth()}}; documented
+explicitly here because lavaan >= 0.7-1 renamed the corresponding
+\code{simulateData()} argument to \code{model_type}, so it can no longer be
+inherited from there.}
 
 \item{dp}{Default prior distributions for the different types of model
 parameters; a named character vector as returned by \code{\link[=priors_for]{priors_for()}}.}
 
-\item{test}{Character indicating whether to compute posterior fit indices.
-Defaults to "standard". Change to "none" to skip these computations.}
+\item{test}{Character indicating which post-estimation quantities to
+compute. Defaults to "standard": posterior fit indices (PPP and DIC),
+plus -- for models supported by the casewise machinery and fitted with
+a mean structure -- the WAIC (reusing the fit's posterior draws, when
+\code{nsamp >= 100}) and a full leave-one-out cross-validation whenever its
+predicted serial cost is within a 10-second budget; both are stored
+with the fit (see \code{\link[=loo]{loo()}} and \code{\link[=waic]{waic()}}). "none" skips all of these.
+Include "loo" (e.g. \code{test = c("standard", "loo")}, or \code{test = "loo"}
+alone) to force the full LOO regardless of the budget.}
 
 \item{vb_correction}{Logical indicating whether to apply a variational Bayes
 correction for the posterior mean vector of estimates. Defaults to \code{TRUE}.}
@@ -109,6 +119,13 @@ mode. Options include \code{"nlminb"} (default), \code{"ucminf"}, and \code{"opt
 \item{numerical_grad}{Logical indicating whether to use numerical gradients
 for the optimisation. Defaults to \code{FALSE} to use analytical gradients.}
 
+\item{start}{Optional numeric vector of starting values for the optimiser,
+given as a full vector of free parameters in the internal (unconstrained)
+parameterisation. Mainly for internal use by \code{\link[=update]{update()}}, which warm-starts
+mode-finding from a previous fit's posterior mode; supplying a hand-built
+vector requires knowledge of the internal parameter ordering. Its length
+must equal the number of free parameters or an error is raised.}
+
 \item{cores}{Integer or \code{NULL}. Number of cores for parallel marginal
 fitting. When \code{NULL} (default), serial execution is used unless the number
 of free parameters exceeds 120, in which case parallelisation is enabled
@@ -116,12 +133,12 @@ automatically using all available physical cores. Set to \code{1L} to force
 serial execution. If \code{cores > 1}, marginal fits are distributed across
 cores using \code{\link[parallel:mclapply]{parallel::mclapply()}} (fork-based; no parallelism on Windows).}
 
-\item{...}{Additional arguments to be passed to the \link[lavaan:lavaan]{lavaan::lavaan} model fitting
+\item{...}{Additional arguments to be passed to the \link[lavaan:lavaan]{lavaan} model fitting
 function.}
 }
 \value{
 An S4 object of class \code{INLAvaan} which is a subclass of the
-\link[lavaan:lavaan-class]{lavaan::lavaan} class.
+\link[lavaan:lavaan-class]{lavaan} class.
 }
 \description{
 This function fits a Bayesian latent variable model by approximating the

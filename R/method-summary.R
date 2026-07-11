@@ -15,12 +15,40 @@ print.summary.inlavaan_internal <- function(x, digits = 3, ...) {
   invisible(x)
 }
 
+# Match rows of one parameter table (e.g. parameterEstimates() output) to
+# rows of another (e.g. standardisedsolution() output) by lhs/op/rhs and
+# group, because the two need not align row-for-row: parameterEstimates()
+# keeps user equality constraints and r-square rows that
+# standardizedSolution() drops, and the latter keeps system equality
+# constraints the former drops. Duplicate keys (the same parameter in
+# different blocks of a multilevel model, where lavaan omits the block
+# column) are matched by order of occurrence, both tables being in partable
+# order. Rows with no counterpart get NA.
+match_partable_rows <- function(a, b) {
+  key <- function(df) {
+    k <- paste(df$lhs, df$op, df$rhs, if (is.null(df$group)) 1L else df$group)
+    paste(k, stats::ave(seq_along(k), k, FUN = seq_along))
+  }
+  match(key(a), key(b))
+}
+
+# Format a numeric column for the estimates table: nd decimal places, blanks
+# for missing entries.
+format_pe_col <- function(x, nd) {
+  out <- rep("", length(x))
+  ok <- !is.na(x)
+  out[ok] <- formatC(x[ok], digits = nd, format = "f")
+  out
+}
+
 summary_inlavaan <- function(
   object,
   header = TRUE,
   fit.measures = TRUE,
   estimates = TRUE,
+  ci = TRUE,
   standardized = FALSE,
+  standardised = standardized,
   rsquare = FALSE,
   postmedian = FALSE,
   postmode = FALSE,
@@ -31,12 +59,6 @@ summary_inlavaan <- function(
   nd = 3L,
   ...
 ) {
-  if (isTRUE(rsquare)) {
-    cli_warn(
-      "{.arg rsquare = TRUE} is not implemented yet."
-    )
-  }
-
   vb_correction <- all(!is.na(object@external$inlavaan_internal$vb$correction))
 
   ## ----- Header --------------------------------------------------------------
@@ -59,134 +81,146 @@ summary_inlavaan <- function(
     )
   }
 
-  if (isTRUE(estimates)) {
-    marg_method <- object@external$inlavaan_internal$marginal_method
-    # if (marg_method == "skewnorm")
-    #   marg_method <- "Skew Normal"
-    # else if (marg_method == "asymgaus")
-    #   marg_method <- "Two-piece Gaussian"
-    # else if (marg_method == "marggaus")
-    #   marg_method <- "Marginal Gaussian"
-    # else if (marg_method == "sampling")
-    #   marg_method <- "Sampling"
+  # Everything below prints the parameter estimates table
+  if (!isTRUE(estimates)) {
+    return(invisible(NULL))
+  }
 
-    PE <- lavaan::parameterEstimates(
-      object,
-      se = FALSE, # create our own
-      zstat = FALSE,
-      ci = TRUE,
-      standardized = FALSE,
-      rsquare = rsquare,
-      remove.eq = FALSE,
-      remove.system.eq = TRUE,
-      remove.ineq = FALSE,
-      remove.def = FALSE,
-      header = TRUE,
-      output = "text"
-    )
-    if (is.null(PE$block)) {
-      PE$block <- 1
-      PE$block[PE$op == ":="] <- 0
-    }
+  marg_method <- object@external$inlavaan_internal$marginal_method
+  # if (marg_method == "skewnorm")
+  #   marg_method <- "Skew Normal"
+  # else if (marg_method == "asymgaus")
+  #   marg_method <- "Two-piece Gaussian"
+  # else if (marg_method == "marggaus")
+  #   marg_method <- "Marginal Gaussian"
+  # else if (marg_method == "sampling")
+  #   marg_method <- "Sampling"
 
-    # # If PML, remove intercepts when not estimated
-    # if (object@Model@estimator == "PML") {
-    #   browser()
-    # }
+  PE <- call_lavaan(
+    "parameterEstimates",
+    object,
+    se = FALSE, # create our own
+    zstat = FALSE,
+    ci = TRUE,
+    standardized = FALSE,
+    rsquare = rsquare,
+    remove.eq = FALSE,
+    remove.system.eq = TRUE,
+    remove.ineq = FALSE,
+    remove.def = FALSE,
+    header = TRUE,
+    output = "text"
+  )
+  if (is.null(PE$block)) {
+    PE$block <- 1
+    PE$block[PE$op == ":="] <- 0
+  }
 
-    # Now need to put information into PE from pt and summary
-    pt <- object@ParTable
-    ptfreeidx <- which(pt$free > 0)
-    ptdefidx <- which(pt$op == ":=")
-    ptdeltaidx <- which(pt$op == "~*~")
-    ptidx <- c(ptfreeidx, ptdefidx, ptdeltaidx)
-    summ <- object@external$inlavaan_internal$summary
-    peidx <- match(
-      paste0(
-        pt$lhs[ptidx],
-        pt$op[ptidx],
-        pt$rhs[ptidx],
-        pt$block[ptidx]
-      ),
-      paste0(PE$lhs, PE$op, PE$rhs, PE$block)
-    )
-    summidx <- match(pt$free[pt$free > 0], seq_len(nrow(summ)))
-    if (length(ptdefidx) > 0 | length(ptdeltaidx) > 0) {
-      # FIXME: I think this should be ok, since pt$free always in increasing
-      # order
-      summidx <- seq_len(nrow(summ))
-    }
+  # # If PML, remove intercepts when not estimated
+  # if (object@Model@estimator == "PML") {
+  #   browser()
+  # }
 
-    char.format <- paste("%", max(8, nd + 5), "s", sep = "")
-    PE$SD <- ""
-    PE$SD[peidx] <- formatC(summ$SD[summidx], digits = nd, format = "f")
+  # Now need to put information into PE from pt and summary
+  pt <- object@ParTable
+  ptfreeidx <- which(pt$free > 0)
+  ptdefidx <- which(pt$op == ":=")
+  ptdeltaidx <- which(pt$op == "~*~")
+  ptidx <- c(ptfreeidx, ptdefidx, ptdeltaidx)
+  summ <- object@external$inlavaan_internal$summary
+  peidx <- match(
+    paste0(
+      pt$lhs[ptidx],
+      pt$op[ptidx],
+      pt$rhs[ptidx],
+      pt$block[ptidx]
+    ),
+    paste0(PE$lhs, PE$op, PE$rhs, PE$block)
+  )
+  summidx <- match(pt$free[pt$free > 0], seq_len(nrow(summ)))
+  if (length(ptdefidx) > 0 | length(ptdeltaidx) > 0) {
+    # FIXME: I think this should be ok, since pt$free always in increasing
+    # order
+    summidx <- seq_len(nrow(summ))
+  }
 
+  char.format <- paste("%", max(8, nd + 5), "s", sep = "")
+  PE$SD <- ""
+  PE$SD[peidx] <- formatC(summ$SD[summidx], digits = nd, format = "f")
+
+  if (isTRUE(ci)) {
     PE$`2.5%` <- ""
     PE$`2.5%`[peidx] <- formatC(summ$`2.5%`[summidx], digits = nd, format = "f")
+  }
 
-    if (isTRUE(postmedian)) {
-      PE$`50%` <- ""
-      PE$`50%`[peidx] <- formatC(summ$`50%`[summidx], digits = nd, format = "f")
-    }
+  if (isTRUE(postmedian)) {
+    PE$`50%` <- ""
+    PE$`50%`[peidx] <- formatC(summ$`50%`[summidx], digits = nd, format = "f")
+  }
 
+  if (isTRUE(ci)) {
     PE$`97.5%` <- ""
     PE$`97.5%`[peidx] <- formatC(
       summ$`97.5%`[summidx],
       digits = nd,
       format = "f"
     )
+  }
 
-    if (isTRUE(postmode)) {
-      PE$Mode <- ""
-      PE$Mode[peidx] <- formatC(summ$Mode[summidx], digits = nd, format = "f")
+  if (isTRUE(postmode)) {
+    PE$Mode <- ""
+    PE$Mode[peidx] <- formatC(summ$Mode[summidx], digits = nd, format = "f")
+  }
+
+  # Standardised solution?
+  if (isTRUE(standardised)) {
+    stdlv <- standardisedsolution(object, type = "std.lv", ...)
+    stdall <- standardisedsolution(object, type = "std.all", ...)
+    stdidx <- match_partable_rows(PE, stdlv)
+    PE$std.lv <- format_pe_col(stdlv$est.std[stdidx], nd)
+    PE$std.all <- format_pe_col(stdall$est.std[stdidx], nd)
+  }
+
+  # NMAD (skewnorm marginal fit quality)
+  if (isTRUE(nmad)) {
+    # nocov start
+    nmad_vals <- tryCatch(
+      object@external$inlavaan_internal$approx_data[, "nmad"],
+      error = function(e) NULL
+    )
+    if (!is.null(nmad_vals) && !all(is.na(nmad_vals))) {
+      PE$NMAD <- ""
+      PE$NMAD[peidx] <- formatC(nmad_vals[summidx], digits = nd, format = "f")
+      PE$NMAD[peidx][grepl("NA", PE$NMAD[peidx])] <- ""
+    }
+  } # nocov end
+
+  # KLD and VB shift in units of posterior SD (opt-in)
+  if (isTRUE(vb_correction)) {
+    # nocov start
+    if (isTRUE(kld)) {
+      PE$KLD <- ""
+      PE$KLD[peidx] <- formatC(summ$kld[summidx], digits = nd, format = "f")
+      PE$KLD[peidx][grepl("NA", PE$KLD[peidx])] <- ""
     }
 
-    # Standardised solution?
-    if (isTRUE(standardized)) { # nocov start
-      stdlv <- standardisedsolution(object, type = "std.lv")
-      stdall <- standardisedsolution(object, type = "std.all")
-      PE$std.lv <- stdlv$est
-      PE$std.all <- stdall$est
-    } # nocov end
-
-    # NMAD (skewnorm marginal fit quality)
-    if (isTRUE(nmad)) { # nocov start
-      nmad_vals <- tryCatch(
-        object@external$inlavaan_internal$approx_data[, "nmad"],
-        error = function(e) NULL
+    if (isTRUE(vb_shift)) {
+      PE$VBshift <- ""
+      PE$VBshift[peidx] <- formatC(
+        summ$vb_shift_sigma[summidx],
+        digits = nd,
+        format = "f"
       )
-      if (!is.null(nmad_vals) && !all(is.na(nmad_vals))) {
-        PE$NMAD <- ""
-        PE$NMAD[peidx] <- formatC(nmad_vals[summidx], digits = nd, format = "f")
-        PE$NMAD[peidx][grepl("NA", PE$NMAD[peidx])] <- ""
-      }
-    } # nocov end
+      PE$VBshift[peidx][grepl("NA", PE$VBshift[peidx])] <- ""
+    }
+  } # nocov end
 
-    # KLD and VB shift in units of posterior SD (opt-in)
-    if (isTRUE(vb_correction)) { # nocov start
-      if (isTRUE(kld)) {
-        PE$KLD <- ""
-        PE$KLD[peidx] <- formatC(summ$kld[summidx], digits = nd, format = "f")
-        PE$KLD[peidx][grepl("NA", PE$KLD[peidx])] <- ""
-      }
-
-      if (isTRUE(vb_shift)) {
-        PE$VBshift <- ""
-        PE$VBshift[peidx] <- formatC(
-          summ$vb_shift_sigma[summidx],
-          digits = nd,
-          format = "f"
-        )
-        PE$VBshift[peidx][grepl("NA", PE$VBshift[peidx])] <- ""
-      }
-    } # nocov end
-
-    if (isTRUE(priors)) { # nocov start
-      PE$Prior <- ""
-      PE$Prior[peidx] <- summ$Prior[summidx]
-      PE$Prior[peidx][is.na(PE$Prior[peidx])] <- ""
-    } # nocov end
-  }
+  if (isTRUE(priors)) {
+    # nocov start
+    PE$Prior <- ""
+    PE$Prior[peidx] <- summ$Prior[summidx]
+    PE$Prior[peidx][is.na(PE$Prior[peidx])] <- ""
+  } # nocov end
 
   # If PML, intercepts shown regardless
   if (object@Model@estimator == "PML") {
@@ -247,8 +281,13 @@ summary_inlavaan <- function(
 #' @param header Logical; if TRUE, print model fit information header.
 #' @param fit.measures Logical; if TRUE, print fit measures (DIC and PPP).
 #' @param estimates Logical; if TRUE, print parameter estimates table.
+#' @param ci Logical; if TRUE (default), include 95% credible intervals
+#'   (2.5% and 97.5% posterior quantiles) in the estimates table.
 #' @param standardized Logical; if TRUE, include standardized estimates.
-#' @param rsquare Logical; if TRUE, include R-square values.
+#' @param standardised Alias of `standardized`; either spelling is accepted
+#'   (the alias wins if both are supplied).
+#' @param rsquare Logical; if TRUE, include R-square values for the observed
+#'   dependent variables, computed at the posterior mean point estimates.
 #' @param postmedian Logical; if TRUE, include posterior median in estimates.
 #' @param postmode Logical; if TRUE, include posterior mode in estimates.
 #' @param nmad Logical; if TRUE (default), include the NMAD column for

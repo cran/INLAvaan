@@ -97,3 +97,34 @@ test_that("multigroup predict works for lv, yhat, and newdata", {
   expect_equal(nrow(summary(prd_yhat)$Mean), nrow(dat))
   expect_equal(nrow(summary(prd_new)$Mean),  5L)
 })
+
+# ---- summary = TRUE shortcut ---------------------------------------------
+
+test_that("predict(summary = TRUE) matches summary(predict(...))", {
+  set.seed(1)
+  a <- predict(fit_cfa, type = "yhat", nsamp = NSAMP, summary = TRUE)
+  set.seed(1)
+  b <- summary(predict(fit_cfa, type = "yhat", nsamp = NSAMP))
+  expect_s3_class(a, "summary.predict.inlavaan_internal")
+  expect_equal(a, b)
+})
+
+test_that("predict() default (summary = FALSE) still returns raw draws", {
+  prd <- predict(fit_cfa, type = "yhat", nsamp = NSAMP)
+  expect_s3_class(prd, "predict.inlavaan_internal")
+  expect_equal(length(prd), NSAMP)
+})
+
+test_that("Factor scores are centred on the implied/saturated means", {
+  # Regression test: predict() used to condition on raw y instead of
+  # y - mu_y, offsetting every factor score by Phi Lambda' Sigma^{-1} mu_y
+  # (several sd on uncentred data), under both meanstructure settings.
+  fit50 <- acfa(mod, dat, verbose = FALSE, nsamp = 50,
+                vb_correction = FALSE, test = "none")
+  draws <- unclass(predict(fit50, type = "lv"))
+  fs <- Reduce(`+`, draws) / length(draws)
+  fs_lav <- lavaan::lavPredict(lavaan::cfa(mod, dat))
+  for (k in seq_len(ncol(fs_lav))) {
+    expect_lt(max(abs(fs[, k] - fs_lav[, k])) / sd(fs_lav[, k]), 0.6)
+  }
+})

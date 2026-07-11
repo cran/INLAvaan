@@ -32,7 +32,7 @@ asem(
 \item{model}{A description of the user-specified model. Typically, the model
     is described using the lavaan model syntax. See 
     \code{\link[lavaan]{model.syntax}} for more information. Alternatively, a
-    parameter table (eg. the output of the \code{lavParTable()} function) is also
+    parameter table (e.g., the output of the \code{lavParTable()} function) is also
     accepted.}
 
 \item{data}{An optional data frame containing the observed variables used in
@@ -42,8 +42,15 @@ asem(
 \item{dp}{Default prior distributions for the different types of model
 parameters; a named character vector as returned by \code{\link[=priors_for]{priors_for()}}.}
 
-\item{test}{Character indicating whether to compute posterior fit indices.
-Defaults to "standard". Change to "none" to skip these computations.}
+\item{test}{Character indicating which post-estimation quantities to
+compute. Defaults to "standard": posterior fit indices (PPP and DIC),
+plus -- for models supported by the casewise machinery and fitted with
+a mean structure -- the WAIC (reusing the fit's posterior draws, when
+\code{nsamp >= 100}) and a full leave-one-out cross-validation whenever its
+predicted serial cost is within a 10-second budget; both are stored
+with the fit (see \code{\link[=loo]{loo()}} and \code{\link[=waic]{waic()}}). "none" skips all of these.
+Include "loo" (e.g. \code{test = c("standard", "loo")}, or \code{test = "loo"}
+alone) to force the full LOO regardless of the budget.}
 
 \item{vb_correction}{Logical indicating whether to apply a variational Bayes
 correction for the posterior mean vector of estimates. Defaults to \code{TRUE}.}
@@ -109,12 +116,12 @@ automatically using all available physical cores. Set to \code{1L} to force
 serial execution. If \code{cores > 1}, marginal fits are distributed across
 cores using \code{\link[parallel:mclapply]{parallel::mclapply()}} (fork-based; no parallelism on Windows).}
 
-\item{...}{Additional arguments to be passed to the \link[lavaan:lavaan]{lavaan::lavaan} model fitting
+\item{...}{Additional arguments to be passed to the \link[lavaan:lavaan]{lavaan} model fitting
 function.}
 }
 \value{
 An S4 object of class \code{INLAvaan} which is a subclass of the
-\link[lavaan:lavaan-class]{lavaan::lavaan} class.
+\link[lavaan:lavaan-class]{lavaan} class.
 }
 \description{
 Fit an Approximate Bayesian Structural Equation Model

@@ -25,7 +25,9 @@
   header = TRUE,
   fit.measures = TRUE,
   estimates = TRUE,
+  ci = TRUE,
   standardized = FALSE,
+  standardised = standardized,
   rsquare = FALSE,
   postmedian = FALSE,
   postmode = FALSE,
@@ -48,9 +50,16 @@
 
 \item{estimates}{Logical; if TRUE, print parameter estimates table.}
 
+\item{ci}{Logical; if TRUE (default), include 95\% credible intervals
+(2.5\% and 97.5\% posterior quantiles) in the estimates table.}
+
 \item{standardized}{Logical; if TRUE, include standardized estimates.}
 
-\item{rsquare}{Logical; if TRUE, include R-square values.}
+\item{standardised}{Alias of \code{standardized}; either spelling is accepted
+(the alias wins if both are supplied).}
+
+\item{rsquare}{Logical; if TRUE, include R-square values for the observed
+dependent variables, computed at the posterior mean point estimates.}
 
 \item{postmedian}{Logical; if TRUE, include posterior median in estimates.}
 
@@ -70,7 +79,7 @@ Set to TRUE to show it.}
 \item{nd}{Integer; number of decimal places to print for numeric values.}
 }
 \description{
-This is a class that extends the \link[lavaan:lavaan-class]{lavaan::lavaan} class. Several S4 methods are
+This is a class that extends the \link[lavaan:lavaan-class]{lavaan} class. Several S4 methods are
 available.
 }
 \section{Slots}{
@@ -102,5 +111,5 @@ coef(fit)
 
 }
 \seealso{
-\link[lavaan:lavaan-class]{lavaan::lavaan}, \code{\link[=inlavaan]{inlavaan()}}, \code{\link[=acfa]{acfa()}}, \code{\link[=asem]{asem()}}, \code{\link[=agrowth]{agrowth()}}
+\link[lavaan:lavaan-class]{lavaan}, \code{\link[=inlavaan]{inlavaan()}}, \code{\link[=acfa]{acfa()}}, \code{\link[=asem]{asem()}}, \code{\link[=agrowth]{agrowth()}}
 }

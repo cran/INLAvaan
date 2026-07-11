@@ -260,6 +260,7 @@ predict.inlavaan_internal <- function(
   level = 1L,
   nsamp = 250,
   ymis_only = FALSE,
+  summary = FALSE,
   ...
 ) {
   type <- match.arg(type)
@@ -290,7 +291,7 @@ predict.inlavaan_internal <- function(
   }
 
   # Multilevel restrictions
-  if (nlevels > 1L) {
+  if (is_multilevel(lavdata)) {
     # nocov start
     if (!is.null(newdata)) {
       cli_abort("{.arg newdata} is not supported for multilevel models.")
@@ -314,6 +315,12 @@ predict.inlavaan_internal <- function(
     nobs_out <- lavdata@nobs
   }
 
+  # Saturated means for models without a mean structure: the implied mean
+  # does not exist, but the conditioning kernels below still need one. The
+  # sample means of the *fitted* data are the correct plug-in (they are
+  # the saturated means the fit conditions on), also for newdata.
+  ybar_fit <- lapply(lavdata@X, colMeans)
+
   samp <- sample_params(
     theta_star = theta_star,
     Sigma_theta = Sigma_theta,
@@ -327,7 +334,7 @@ predict.inlavaan_internal <- function(
 
   # ---- type = "lv": Posterior draws of latent variable scores ----
   if (type == "lv") {
-    if (nlevels > 1L) {
+    if (is_multilevel(lavdata)) {
       # nocov start
       # ---- Multilevel path: use lavaan internals ----
       lavsamplestats <- object$lavsamplestats
@@ -503,7 +510,16 @@ predict.inlavaan_internal <- function(
           Sigmay_inv <- solve(front %*% Psi %*% t(front) + Theta)
           PhiLtSinv <- Phi %*% t(Lambda) %*% Sigmay_inv
 
-          mu_eta <- t(as.numeric(alpha) + PhiLtSinv %*% t(y[[g]]))
+          # E(eta | y) = alpha + Phi Lambda' Sigma^{-1} (y - mu_y): centre
+          # by the implied mean, or the saturated means without one
+          alpha_vec <- rep_len(as.numeric(alpha), ncol(front))
+          mu_y <- if (!is.null(glist$nu)) {
+            as.numeric(glist$nu + front %*% alpha_vec)
+          } else {
+            ybar_fit[[g]]
+          }
+          yc <- sweep(y[[g]], 2L, mu_y)
+          mu_eta <- t(as.numeric(alpha) + PhiLtSinv %*% t(yc))
 
           V_eta <- Phi - PhiLtSinv %*% Lambda %*% Phi
           chol_V <- t(chol(V_eta))
@@ -783,8 +799,16 @@ predict.inlavaan_internal <- function(
           Sigmay_inv <- solve(front %*% Psi %*% t(front) + Theta)
           PhiLtSinv <- Phi %*% t(Lambda) %*% Sigmay_inv
 
-          # Posterior draw of eta | y, theta
-          mu_eta <- t(as.numeric(alpha) + PhiLtSinv %*% t(y[[g]]))
+          # Posterior draw of eta | y, theta, centring by the implied mean
+          # (or the saturated means when no mean structure exists)
+          alpha_vec <- rep_len(as.numeric(alpha), ncol(front))
+          mu_y <- if (!is.null(glist$nu)) {
+            as.numeric(glist$nu + front %*% alpha_vec)
+          } else {
+            ybar_fit[[g]]
+          }
+          yc <- sweep(y[[g]], 2L, mu_y)
+          mu_eta <- t(as.numeric(alpha) + PhiLtSinv %*% t(yc))
           V_eta <- Phi - PhiLtSinv %*% Lambda %*% Phi
           chol_V <- t(chol(V_eta))
           n_obs <- nrow(mu_eta)
@@ -792,14 +816,15 @@ predict.inlavaan_internal <- function(
           Z <- matrix(rnorm(n_obs * nlv), nrow = nlv, ncol = n_obs)
           eta_draw <- mu_eta + t(chol_V %*% Z)
 
-          # yhat = nu + Lambda %*% (I-B)^{-1} %*% eta
+          # yhat = mu_y + front (eta - alpha)
+          nu_eff <- mu_y - as.numeric(front %*% alpha_vec)
           if (is.null(B)) {
-            yhat <- sweep(tcrossprod(eta_draw, Lambda), 2, as.numeric(nu), "+")
+            yhat <- sweep(tcrossprod(eta_draw, Lambda), 2, nu_eff, "+")
           } else {
             yhat <- sweep(
               tcrossprod(eta_draw %*% t(IminB_inv), Lambda),
               2,
-              as.numeric(nu),
+              nu_eff,
               "+"
             )
           }
@@ -898,7 +923,10 @@ predict.inlavaan_internal <- function(
           mu_y <- if (!is.null(lavimplied$mean)) {
             as.numeric(lavimplied$mean[[g]])
           } else {
-            rep(0, p)
+            # no mean structure: condition on the saturated (sample) means
+            # (defensive: missing = "ML" forces a mean structure in lavaan,
+            # so this branch is unreachable from a real fit)
+            ybar_fit[[g]] # nocov
           }
         } else {
           # nocov start
@@ -1066,7 +1094,11 @@ predict.inlavaan_internal <- function(
 
   attr(out, "nobs") <- nobs_out
   attr(out, "type") <- type
-  structure(out, class = "predict.inlavaan_internal")
+  out <- structure(out, class = "predict.inlavaan_internal")
+  if (isTRUE(summary)) {
+    return(base::summary(out))
+  }
+  out
 }
 
 #' @exportS3Method print predict.inlavaan_internal
@@ -1280,11 +1312,18 @@ print.summary.predict.inlavaan_internal <- function(
 #'   sample (names of the form \code{"varname[rowindex]"}, matching the blavaan
 #'   convention). When \code{FALSE} (default), returns the full data matrix with
 #'   missing values filled in.
+#' @param summary Logical. When \code{TRUE}, collapse the posterior draws with
+#'   \code{summary()} and return summary statistics (mean, SD, quantiles, mode)
+#'   instead of the raw draws -- equivalent to calling
+#'   \code{summary(predict(object, ...))} but without materialising the
+#'   intermediate draws object. Default \code{FALSE}.
 #' @param ... Currently unused.
 #'
-#' @returns A matrix of posterior draws with rows corresponding to samples and
-#'   columns to variables or latent factors, or a list of such matrices when
-#'   \code{ymis_only = FALSE}.
+#' @returns A list of \code{nsamp} posterior draws, each a matrix (or data
+#'   frame, for multiple groups) with rows corresponding to cases and columns
+#'   to variables or latent factors. When \code{summary = TRUE}, instead
+#'   returns a \code{summary.predict.inlavaan_internal} object with the
+#'   posterior mean, SD, quantiles, and mode for each case/variable.
 #'
 #' @examples
 #' \donttest{
@@ -1304,6 +1343,9 @@ print.summary.predict.inlavaan_internal <- function(
 #' # Predicted observed variable means
 #' yhat <- predict(fit, type = "yhat")
 #' head(yhat)
+#'
+#' # Point estimates only, skipping the manual summary() step
+#' predict(fit, type = "yhat", summary = TRUE)
 #' }
 #'
 #' @seealso [sampling()], [simulate()], [summary()]
@@ -1322,6 +1364,7 @@ setMethod(
     level = 1L,
     nsamp = 1000,
     ymis_only = FALSE,
+    summary = FALSE,
     ...
   ) {
     type <- match.arg(type)
@@ -1332,6 +1375,7 @@ setMethod(
       level = level,
       nsamp = nsamp,
       ymis_only = ymis_only,
+      summary = summary,
       ...
     )
   }

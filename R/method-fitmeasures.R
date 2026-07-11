@@ -451,6 +451,44 @@ inlav_fit_measures <- function(
     }
   }
 
+  # LOO measures: free when stored with the fit (test = "loo" or add_loo());
+  # otherwise computed on demand, and only when requested by name -- the LOO
+  # computation is fresh work and cannot be cached into `object` (S4 copy
+  # semantics), so it never silently inflates a bare fitMeasures() call
+  loo_measures <- c("elpd_loo", "se_loo", "p_loo", "looic")
+  res_loo <- object@external$inlavaan_internal$loo
+  if (
+    is.null(res_loo) &&
+      !identical(fit.measures, "all") &&
+      any(loo_measures %in% fit.measures)
+  ) {
+    res_loo <- tryCatch(loo(object), error = function(e) NULL)
+  }
+  if (!is.null(res_loo)) {
+    out["elpd_loo"] <- res_loo$estimates["elpd_loo", "Estimate"]
+    out["p_loo"] <- res_loo$estimates["p_loo", "Estimate"]
+    out["looic"] <- res_loo$estimates["looic", "Estimate"]
+    out["se_loo"] <- res_loo$estimates["looic", "SE"]
+  }
+
+  # WAIC: free when stored with the fit; otherwise sampling-based, computed
+  # on demand when requested by name
+  waic_measures <- c("elpd_waic", "se_waic", "p_waic", "waic")
+  res_waic <- object@external$inlavaan_internal$waic
+  if (
+    is.null(res_waic) &&
+      !identical(fit.measures, "all") &&
+      any(waic_measures %in% fit.measures)
+  ) {
+    res_waic <- tryCatch(waic(object), error = function(e) NULL)
+  }
+  if (!is.null(res_waic)) {
+    out["elpd_waic"] <- res_waic$estimates["elpd_waic", "Estimate"]
+    out["p_waic"] <- res_waic$estimates["p_waic", "Estimate"]
+    out["waic"] <- res_waic$estimates["waic", "Estimate"]
+    out["se_waic"] <- res_waic$estimates["waic", "SE"]
+  }
+
   # Filter if specific measures requested
   if (!identical(fit.measures, "all")) {
     idx <- which(names(out) %in% fit.measures)
@@ -500,7 +538,12 @@ print.fitmeasures.inlavaan_internal <- function(x, ...) {
 #' @param object An object of class [INLAvaan].
 #' @param fit.measures If `"all"`, all fit measures available will be returned. If
 #'   only a single or a few fit measures are specified by name, only those are
-#'   computed and returned.
+#'   computed and returned. The LOO measures `"elpd_loo"`, `"se_loo"`,
+#'   `"p_loo"` and `"looic"` (see [loo()]) are included in `"all"` only when
+#'   a LOO result is stored with the fit (`test = "loo"` in [inlavaan()] or
+#'   [add_loo()]); otherwise they are computed on demand when requested by
+#'   name, and recomputed on every call -- store the result with
+#'   `fit <- add_loo(fit)` (or call [loo()] directly) for repeated access.
 #' @param baseline.model An optional [INLAvaan] object representing the
 #'   baseline (null) model. Required for incremental fit indices (BCFI, BTLI,
 #'   BNFI). Must have been fitted with `test != "none"`.
@@ -545,11 +588,72 @@ print.fitmeasures.inlavaan_internal <- function(x, ...) {
 #' @name fitmeasures
 #' @rdname fitmeasures
 #' @aliases fitMeasures,INLAvaan-method
-#' @export
-setMethod("fitMeasures", "INLAvaan", inlav_fit_measures)
+#' @rawNamespace exportMethods(fitMeasures)
+NULL
 
 #' @name fitmeasures
 #' @rdname fitmeasures
 #' @aliases fitmeasures,INLAvaan-method
-#' @export
-setMethod("fitmeasures", "INLAvaan", inlav_fit_measures)
+#' @rawNamespace exportMethods(fitmeasures)
+NULL
+
+# lavaan >= 0.7 renamed the fitMeasures()/fitmeasures() generics' arguments
+# (fit.measures/baseline.model -> fit_measures/baseline_model). Unlike a
+# plain rename, registering setMethod() against the WRONG argument names
+# doesn't just fail loudly: S4 dispatch silently drops any value bound to a
+# generic-level formal the method doesn't also declare (verified empirically
+# -- positional and named calls both default silently), and if the method
+# was compiled against a lavaan present at a *different* time than the one
+# later loaded, dispatch can also error outright ("could not find symbol").
+# So -- like the lavaan___-prefixed internals in lavaan-unexported.R -- these
+# methods must be (re)built from whichever lavaan generic is actually active
+# in the current session, in .onLoad(), not baked in at build/install time.
+# The resolved installed spellings come from the shared lavaan_argnames map
+# (see lavaan-argnames.R, resolved earlier in the same .onLoad()), the one
+# mechanism INLAvaan uses for every renamed lavaan argument.
+#
+# INLAvaan's own documented/stable parameter names are fit.measures and
+# baseline.model (used internally, e.g. by compare()), regardless of which
+# lavaan is loaded. Under lavaan >= 0.7 those don't match the active
+# generic's own (renamed) formals, so a caller using our documented names
+# falls through into "..." unmatched rather than being dropped; recover it
+# from there instead of re-forwarding "..." verbatim (which would otherwise
+# also duplicate whatever the generic's own formal already bound).
+register_fitmeasures_methods <- function(ns) {
+  fm_map <- lavaan_argnames[["fitMeasures"]]
+  fit_measures_arg <- fm_map[["fit.measures"]]
+  baseline_model_arg <- fm_map[["baseline.model"]]
+
+  for (generic_name in c("fitMeasures", "fitmeasures")) {
+    gf <- formals(methods::getGeneric(generic_name))
+
+    method_fn <- function(object, ...) NULL
+    formals(method_fn) <- gf
+    body(method_fn) <- bquote({
+      dots <- list(...)
+      fit.measures <- .(as.name(fit_measures_arg))
+      baseline.model <- .(as.name(baseline_model_arg))
+      if ("fit.measures" %in% names(dots)) {
+        fit.measures <- dots[["fit.measures"]]
+        dots[["fit.measures"]] <- NULL
+      }
+      if ("baseline.model" %in% names(dots)) {
+        baseline.model <- dots[["baseline.model"]]
+        dots[["baseline.model"]] <- NULL
+      }
+      do.call(
+        inlav_fit_measures,
+        c(
+          list(
+            object,
+            fit.measures = fit.measures,
+            baseline.model = baseline.model
+          ),
+          dots
+        )
+      )
+    })
+    environment(method_fn) <- ns
+    methods::setMethod(generic_name, "INLAvaan", method_fn, where = ns)
+  }
+}

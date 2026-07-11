@@ -1,0 +1,52 @@
+mod <- "
+  visual  =~ x1 + a*x2 + b*x3
+  textual =~ x4 + x5 + x6
+  a == b
+"
+dat <- lavaan::HolzingerSwineford1939
+fit <- acfa(mod, dat, verbose = FALSE, nsamp = 3, test = "none")
+
+test_that("summary(standardized = TRUE) works with equality constraints", {
+  expect_no_error(
+    out <- capture.output(summary(fit, standardized = TRUE, nsamp = 5))
+  )
+  expect_true(any(grepl("Std.lv", out)))
+  expect_true(any(grepl("Std.all", out)))
+})
+
+test_that("summary(estimates = FALSE) prints the header only", {
+  expect_no_error(out <- capture.output(summary(fit, estimates = FALSE)))
+  expect_true(any(grepl("Number of model parameters", out)))
+  expect_false(any(grepl("Parameter Estimates", out)))
+})
+
+test_that("summary(rsquare = TRUE) prints the R-square section", {
+  expect_no_warning(out <- capture.output(summary(fit, rsquare = TRUE)))
+  expect_true(any(grepl("R-Square", out)))
+})
+
+test_that("summary accepts the British spelling standardised = TRUE", {
+  expect_no_error(
+    out <- capture.output(summary(fit, standardised = TRUE, nsamp = 5))
+  )
+  expect_true(any(grepl("Std.lv", out)))
+  expect_true(any(grepl("Std.all", out)))
+})
+
+test_that("summary(ci = FALSE) omits the credible interval columns", {
+  out <- capture.output(summary(fit, ci = FALSE))
+  expect_false(any(grepl("2.5%", out, fixed = TRUE)))
+  out_ci <- capture.output(summary(fit))
+  expect_true(any(grepl("2.5%", out_ci, fixed = TRUE)))
+  expect_true(any(grepl("97.5%", out_ci, fixed = TRUE)))
+})
+
+test_that("summary(rsquare = TRUE, standardized = TRUE) rows stay aligned", {
+  expect_no_error(
+    out <- capture.output(
+      summary(fit, rsquare = TRUE, standardized = TRUE, nsamp = 5)
+    )
+  )
+  expect_true(any(grepl("R-Square", out)))
+  expect_true(any(grepl("Std.all", out)))
+})
