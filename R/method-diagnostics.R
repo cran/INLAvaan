@@ -32,17 +32,30 @@
 #'   \item{\code{vb_kld_global}}{Global KL divergence from the VB mean correction
 #'     (NA if VB correction was not applied).}
 #'   \item{\code{vb_applied}}{1 if VB correction was applied, 0 otherwise.}
+#'   \item{\code{vb_shift_max}}{Maximum, across parameters, of the absolute
+#'     VB correction in posterior-SD units (max |\code{vb_shift_sigma}|). This
+#'     is the quantity the fit-time check tests. NA if the VB correction was
+#'     not applied.}
 #'   \item{\code{kld_max}}{Maximum per-parameter KL divergence from the VB correction.}
 #'   \item{\code{kld_mean}}{Mean per-parameter KL divergence.}
+#'   \item{\code{vb_mcse_max}}{Maximum, across parameters, of the estimated
+#'     quadrature error of the VB shift, in posterior-SD units. See
+#'     \code{vb_mcse_sigma} below. NA under
+#'     \code{vb_method = "gauss_hermite"}.}
+#'   \item{\code{vb_mcse_mean}}{Mean estimated quadrature error of the VB
+#'     shift, in posterior-SD units.}
 #'   \item{\code{nmad_max}}{Maximum normalised max-absolute-deviation across
 #'     marginals (skew-normal method only; NA otherwise).}
 #'   \item{\code{nmad_mean}}{Mean NMAD across marginals.}
+#'   \item{\code{scan_end_mass_max}}{Maximum, across parameters, of
+#'     \code{scan_end_mass} (see below). NA unless the skew-normal marginal
+#'     method was used.}
 #' }
 #'
 #' \strong{Per-parameter diagnostics} (\code{type = "param"}):
 #' A data frame with columns:
 #' \describe{
-#'   \item{\code{param}}{Parameter name.}
+#'   \item{\code{names}}{Parameter name.}
 #'   \item{\code{grad}}{Analytic gradient of the negative log-posterior at the
 #'     mode. Should be ~0 at convergence.}
 #'   \item{\code{grad_num}}{Numerical (finite-difference) gradient at the mode.
@@ -56,17 +69,56 @@
 #'   \item{\code{kld}}{Per-parameter KL divergence from the VB correction.}
 #'   \item{\code{vb_shift}}{VB correction shift (in original scale).}
 #'   \item{\code{vb_shift_sigma}}{VB shift in units of posterior SD.}
+#'   \item{\code{vb_mcse_sigma}}{Estimated quadrature error of the VB shift, in
+#'     posterior-SD units. The shift is the solution of an integral evaluated by
+#'     quasi-Monte Carlo over a finite node set, so it carries an integration
+#'     error of its own. This estimates that error by splitting the node set in
+#'     half and taking half the disagreement between the two half-set solutions.
+#'     Read it as an error bar on \code{vb_shift_sigma}: a value of 0.05 means
+#'     the reported posterior mean of that parameter could move by roughly that
+#'     much, in SD units, purely from the choice of node set. It runs
+#'     conservative, because the two halves are negatively correlated and
+#'     quasi-Monte Carlo error falls faster than root-n. It is exactly zero for
+#'     parameters whose shift is pinned by the saturated-means fast path, since
+#'     no quadrature is used there. It is NA for every parameter under
+#'     \code{vb_method = "gauss_hermite"}, whose rule is deterministic.}
 #'   \item{\code{nmad}}{Normalised max-absolute-deviation of the skew-normal fit
 #'     (NA when not using the skewnorm method).}
+#'   \item{\code{alpha}}{Shape parameter of the fitted skew-normal marginal,
+#'     on the unconstrained scale. Zero is a Gaussian marginal, and the sign
+#'     gives the direction of the skew (NA when not using the skewnorm
+#'     method).}
+#'   \item{\code{scan_end_mass}}{Mass the fitted marginal puts outside the
+#'     window that was scanned to fit it,
+#'     \eqn{F(\hat\theta_j - 4 s_j) + 1 - F(\hat\theta_j + 4 s_j)}, where
+#'     \eqn{F} is the fitted skew-normal distribution function,
+#'     \eqn{\hat\theta_j} the posterior mode and \eqn{s_j} the Laplace
+#'     posterior SD. The marginal is fitted inside that window only, so mass
+#'     outside it is extrapolation, and when this is large the 2.5\% and
+#'     97.5\% credible limits are the numbers to distrust. A Gaussian marginal
+#'     gives \eqn{2\Phi(-4)} = 6.3e-05, and healthy fits sit between 1e-03 and
+#'     1e-02 (NA when not using the skewnorm method).}
 #' }
 #'
 #' \strong{Fit-time warnings}: [inlavaan()] runs these checks once at the end
 #' of every fit and emits a single consolidated warning (condition class
-#' \code{"inlavaan_diagnostics_warning"}) when any of them look off: the
-#' optimiser did not converge, \code{mode_shift_max} exceeds 0.1,
-#' any marginal has NMAD above 0.1, the VB correction shifted a posterior
-#' mean by more than 1 posterior SD, or the Hessian condition number exceeds
-#' 1e8. A healthy fit stays silent. Silence the check with
+#' \code{"inlavaan_diagnostics_warning"}) when any of them looks off:
+#' \itemize{
+#'   \item the optimiser did not converge;
+#'   \item \code{mode_shift_max} above 0.1 posterior SDs;
+#'   \item any marginal with \code{nmad} above 0.1;
+#'   \item any marginal with \code{scan_end_mass} above 0.05;
+#'   \item \code{vb_shift_max} above 1 posterior SD;
+#'   \item \code{hess_cond} above 1e8.
+#' }
+#' Three of these checks have calibration behind them. Over 1,046 simulated
+#' fits with MCMC references, the Spearman correlation with the worst-case
+#' posterior-mean discrepancy was 0.64 for the VB shift in SD units, 0.59 for
+#' the scan-endpoint mass and 0.48 for the NMAD. The convergence, mode-shift
+#' and condition-number checks are rules of thumb. Every number above is a
+#' package default, chosen so that a healthy fit stays silent, and not a
+#' calibrated cut-off: a tripped check is a prompt to look again, and silence
+#' is not a certificate of accuracy. Silence the check with
 #' \code{suppressWarnings()}, or selectively by handling the condition class.
 #'
 #' @returns For \code{type = "global"}, a named numeric vector (class
@@ -161,20 +213,39 @@ diagnostics_internal <- function(int) {
   vb_shift <- if (vb_applied) vb$correction else rep(NA_real_, m)
   vb_kld <- if (vb_applied) vb$kld else rep(NA_real_, m)
   vb_shift_sigma <- vb_shift / se_laplace
+  # Quadrature (Monte Carlo) error of the VB shift, in posterior-SD units.
+  vb_mcse <- if (vb_applied && !is.null(vb$mcse)) vb$mcse else rep(NA_real_, m)
+  vb_mcse_sigma <- vb_mcse / se_laplace
 
-  # NMAD (skewnorm method only); approx_data may carry extra rows for
-  # covariance/defined parameters, so keep the first m (marginal-scan) rows
-  nmad <- tryCatch(
-    int$approx_data[seq_len(m), "nmad"],
-    error = function(e) rep(NA_real_, m)
-  )
-  if (is.null(nmad) || length(nmad) == 0) {
-    nmad <- rep(NA_real_, m)
+  # Skew-normal fit of each marginal (skewnorm method only). approx_data may
+  # carry extra rows for covariance and defined parameters, so keep the first
+  # m (marginal-scan) rows. Read one column at a time, because a fit may
+  # record some of these columns and not others.
+  sn_col <- function(nm) {
+    val <- tryCatch(int$approx_data[seq_len(m), nm], error = function(e) NULL)
+    if (is.null(val) || length(val) != m) rep(NA_real_, m) else as.numeric(val)
   }
+  nmad <- sn_col("nmad")
+  sn_alpha <- sn_col("alpha")
+  sn_xi <- sn_col("xi")
+  sn_omega <- sn_col("omega")
 
   # Hessian condition number: kappa(H) = kappa(Sigma_theta)
   eig <- eigen(Sigma_theta, symmetric = TRUE, only.values = TRUE)$values
   hess_cond <- if (length(eig) > 0) max(eig) / min(eig) else NA_real_
+
+  # Mass the fitted marginal puts outside the window that was scanned to fit
+  # it, four posterior SDs either side of the raw mode. Fits saved before the
+  # raw mode was recorded fall back to the reported mode, which moves the
+  # window by the VB shift.
+  theta_scan <- int$theta_star_novbc
+  if (is.null(theta_scan)) {
+    theta_scan <- pars
+  }
+  scan_lo <- theta_scan - 4 * se_laplace
+  scan_hi <- theta_scan + 4 * se_laplace
+  scan_end_mass <- psnorm(scan_lo, sn_xi, sn_omega, sn_alpha) +
+    psnorm(scan_hi, sn_xi, sn_omega, sn_alpha, lower_tail = FALSE)
 
   global <- c(
     npar = m,
@@ -187,11 +258,31 @@ diagnostics_internal <- function(int) {
     mode_shift_max = max(mode_shift_sigma),
     hess_cond = hess_cond,
     vb_applied = as.numeric(vb_applied),
+    vb_shift_max = if (all(is.na(vb_shift_sigma))) {
+      NA_real_
+    } else {
+      max(abs(vb_shift_sigma), na.rm = TRUE)
+    },
     vb_kld_global = if (vb_applied) vb$kld_global else NA_real_,
     kld_max = if (all(is.na(vb_kld))) NA_real_ else max(vb_kld, na.rm = TRUE),
     kld_mean = if (all(is.na(vb_kld))) NA_real_ else mean(vb_kld, na.rm = TRUE),
+    vb_mcse_max = if (all(is.na(vb_mcse_sigma))) {
+      NA_real_
+    } else {
+      max(vb_mcse_sigma, na.rm = TRUE)
+    },
+    vb_mcse_mean = if (all(is.na(vb_mcse_sigma))) {
+      NA_real_
+    } else {
+      mean(vb_mcse_sigma, na.rm = TRUE)
+    },
     nmad_max = if (all(is.na(nmad))) NA_real_ else max(nmad, na.rm = TRUE),
-    nmad_mean = if (all(is.na(nmad))) NA_real_ else mean(nmad, na.rm = TRUE)
+    nmad_mean = if (all(is.na(nmad))) NA_real_ else mean(nmad, na.rm = TRUE),
+    scan_end_mass_max = if (all(is.na(scan_end_mass))) {
+      NA_real_
+    } else {
+      max(scan_end_mass, na.rm = TRUE)
+    }
   )
   class(global) <- c("diagnostics.INLAvaan", "numeric")
 
@@ -206,7 +297,10 @@ diagnostics_internal <- function(int) {
     kld = vb_kld,
     vb_shift = vb_shift,
     vb_shift_sigma = vb_shift_sigma,
+    vb_mcse_sigma = vb_mcse_sigma,
     nmad = nmad,
+    alpha = sn_alpha,
+    scan_end_mass = scan_end_mass,
     row.names = NULL,
     stringsAsFactors = FALSE
   )
@@ -219,11 +313,16 @@ diagnostics_internal <- function(int) {
 # single consolidated warning when the checks reported by diagnostics() look
 # off. Thresholds are deliberately loose so that a healthy fit stays silent:
 # healthy fits sit orders of magnitude below them (mode shifts ~1e-4 SD,
-# NMAD < 0.06, VB shifts < 0.6 SD, condition numbers < 1e3).
+# NMAD < 0.06, VB shifts < 0.6 SD, condition numbers < 1e3). The
+# scan-endpoint mass of a healthy fit runs from 1e-3 to 1e-2 (0.001 on
+# Holzinger-Swineford with std.lv, 0.0036 on Political Democracy). Across the
+# base cells of the calibration study at n >= 150 its p95 was 0.0066 and its
+# maximum 0.0104.
 warn_fit_diagnostics <- function(
   int,
   mode_shift_tol = 0.1,
   nmad_tol = 0.1,
+  scan_end_mass_tol = 0.05,
   vb_shift_tol = 1,
   hess_cond_tol = 1e8
 ) {
@@ -288,16 +387,46 @@ warn_fit_diagnostics <- function(
     )
   }
 
-  vbs <- abs(param$vb_shift_sigma)
-  if (any(!is.na(vbs) & vbs > vb_shift_tol)) {
-    worst <- param$names[which.max(vbs)]
+  bad_mass <- which(
+    !is.na(param$scan_end_mass) & param$scan_end_mass > scan_end_mass_tol
+  )
+  if (length(bad_mass)) {
+    bad_mass <- bad_mass[
+      order(param$scan_end_mass[bad_mass], decreasing = TRUE)
+    ]
+    shown <- head(bad_mass, 3L)
+    listed <- paste0(
+      "{.code ",
+      param$names[shown],
+      "} (",
+      formatC(param$scan_end_mass[shown], digits = 2, format = "f"),
+      ")",
+      collapse = ", "
+    )
+    more <- length(bad_mass) - length(shown)
+    issues <- c(
+      issues,
+      "x" = paste0(
+        "The fitted marginal puts more than ",
+        scan_end_mass_tol,
+        " of its mass beyond the scanned window (4 posterior SDs either side
+         of the mode) for ",
+        listed,
+        if (more > 0) paste0(" and ", more, " other", if (more > 1) "s"),
+        "; its credible limits rely on extrapolation."
+      )
+    )
+  }
+
+  if (isTRUE(glob[["vb_shift_max"]] > vb_shift_tol)) {
+    worst <- param$names[which.max(abs(param$vb_shift_sigma))]
     issues <- c(
       issues,
       "x" = paste0(
         "The VB correction shifted {.code ",
         worst,
         "} by ",
-        fmt(max(vbs, na.rm = TRUE)),
+        fmt(glob[["vb_shift_max"]]),
         " posterior SDs; the Gaussian approximation at the mode may be
          inaccurate."
       )
@@ -332,23 +461,26 @@ warn_fit_diagnostics <- function(
 #' @exportS3Method print diagnostics.INLAvaan
 print.diagnostics.INLAvaan <- function(x, ...) {
   nm <- names(x)
+  int_names <- c("npar", "nsamp", "converged", "iterations", "vb_applied")
+  # Quantities that span orders of magnitude, or sit far below the four
+  # decimals of the fixed format, are printed in scientific notation.
+  sci_names <- c(
+    "hess_cond",
+    "mode_shift_max",
+    "scan_end_mass_max"
+  )
   formatted <- vapply(
     seq_along(x),
     function(i) {
       val <- x[i]
       name <- nm[i]
 
-      if (
-        name %in% c("npar", "nsamp", "converged", "iterations", "vb_applied")
-      ) {
-        as.character(as.integer(round(val)))
-      } else if (
-        startsWith(name, "grad_") ||
-          name %in% c("hess_cond", "mode_shift_max")
-      ) {
-        formatC(val, digits = 2, format = "e")
-      } else if (is.na(val)) {
+      if (is.na(val)) {
         "NA"
+      } else if (name %in% int_names) {
+        as.character(as.integer(round(val)))
+      } else if (startsWith(name, "grad_") || name %in% sci_names) {
+        formatC(val, digits = 2, format = "e")
       } else {
         formatC(val, digits = 4, format = "f", drop0trailing = FALSE)
       }
@@ -362,8 +494,16 @@ print.diagnostics.INLAvaan <- function(x, ...) {
 
 #' @exportS3Method print diagnostics.INLAvaan.param
 print.diagnostics.INLAvaan.param <- function(x, digits = 4, ...) {
-  num_cols <- sapply(x, is.numeric)
-  x[, num_cols] <- round(x[, num_cols], digits)
+  num_cols <- names(x)[vapply(x, is.numeric, logical(1))]
+  for (nm in num_cols) {
+    # A healthy scan-endpoint mass is smaller than the last of the four
+    # decimals, so round() would print it as zero.
+    x[[nm]] <- if (nm == "scan_end_mass") {
+      signif(x[[nm]], 3)
+    } else {
+      round(x[[nm]], digits)
+    }
+  }
   print.data.frame(x, ...)
   invisible(x)
 }

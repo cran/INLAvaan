@@ -101,6 +101,7 @@ test_that("multigroup predict works for lv, yhat, and newdata", {
 # ---- summary = TRUE shortcut ---------------------------------------------
 
 test_that("predict(summary = TRUE) matches summary(predict(...))", {
+  skip_on_cran()
   set.seed(1)
   a <- predict(fit_cfa, type = "yhat", nsamp = NSAMP, summary = TRUE)
   set.seed(1)
@@ -127,4 +128,37 @@ test_that("Factor scores are centred on the implied/saturated means", {
   for (k in seq_len(ncol(fs_lav))) {
     expect_lt(max(abs(fs[, k] - fs_lav[, k])) / sd(fs_lav[, k]), 0.6)
   }
+})
+
+# ---- Regression: predict() draws exactly as the fit does -----------------
+
+test_that("predict() passes R_star and honours the fit's samp_copula", {
+  orig <- sample_params
+  args <- NULL
+  local_mocked_bindings(
+    sample_params = function(...) {
+      args <<- list(...)
+      orig(...)
+    }
+  )
+
+  fit_sn <- acfa(mod, dat, verbose = FALSE, nsamp = NSAMP,
+                 vb_correction = FALSE, test = "none",
+                 marginal_method = "skewnorm", samp_norta = TRUE)
+  int_sn <- get_inlavaan_internal(fit_sn)
+  expect_false(is.null(int_sn$R_star))
+  expect_true(isTRUE(int_sn$samp_norta))
+
+  args <- NULL
+  predict(fit_sn, nsamp = NSAMP)
+  expect_identical(args$method, "skewnorm")
+  expect_identical(args$R_star, int_sn$R_star)
+
+  # samp_copula = FALSE is recorded on the fit and inherited by predict()
+  fit_nc <- acfa(mod, dat, verbose = FALSE, nsamp = NSAMP,
+                 vb_correction = FALSE, test = "none",
+                 marginal_method = "skewnorm", samp_copula = FALSE)
+  args <- NULL
+  predict(fit_nc, nsamp = NSAMP)
+  expect_identical(args$method, "sampling")
 })

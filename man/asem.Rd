@@ -10,10 +10,14 @@ asem(
   dp = priors_for(),
   test = "standard",
   vb_correction = TRUE,
+  n_qmc = 64L,
+  vb_method = c("sobol", "gauss_hermite"),
   marginal_method = c("skewnorm", "asymgaus", "marggaus", "sampling"),
   marginal_correction = c("shortcut", "shortcut_fd", "hessian", "none"),
   nsamp = 1000,
   samp_copula = TRUE,
+  samp_norta = FALSE,
+  cov_as_cor = FALSE,
   sn_fit_ngrid = 21,
   sn_fit_logthresh = -6,
   sn_fit_temp = 1,
@@ -42,18 +46,43 @@ asem(
 \item{dp}{Default prior distributions for the different types of model
 parameters; a named character vector as returned by \code{\link[=priors_for]{priors_for()}}.}
 
-\item{test}{Character indicating which post-estimation quantities to
-compute. Defaults to "standard": posterior fit indices (PPP and DIC),
-plus -- for models supported by the casewise machinery and fitted with
-a mean structure -- the WAIC (reusing the fit's posterior draws, when
-\code{nsamp >= 100}) and a full leave-one-out cross-validation whenever its
-predicted serial cost is within a 10-second budget; both are stored
-with the fit (see \code{\link[=loo]{loo()}} and \code{\link[=waic]{waic()}}). "none" skips all of these.
-Include "loo" (e.g. \code{test = c("standard", "loo")}, or \code{test = "loo"}
-alone) to force the full LOO regardless of the budget.}
+\item{test}{Character vector naming the post-estimation quantities to
+compute and store with the fit. The atoms are \code{"ppp"} (posterior
+predictive p-value), \code{"dic"} (deviance information criterion and its
+\code{pD}), \code{"loo"} (leave-one-out cross-validation, see \code{\link[=loo]{loo()}}) and
+\code{"waic"} (see \code{\link[=waic]{waic()}}). Three aliases stand for sets of atoms:
+\code{"standard"} (the default) and its synonym \code{"default"} give
+\code{c("ppp", "dic")}; \code{"full"} gives all four; \code{"none"} gives nothing.
+Aliases and atoms may be mixed and are unioned, so
+\code{test = c("standard", "loo")} adds the LOO to the default set. The LOO
+and the WAIC come from one Taylor pass, so asking for either stores
+both. They run only when asked for, with no time budget. On a model
+the casewise machinery does not support (PML or ordinal data,
+\code{conditional.x = TRUE}, multigroup two-level) they are skipped with a
+warning and the rest of the fit proceeds. The fit records what was
+requested and what was computed (\code{get_inlavaan_internal(fit, "test")});
+\code{\link[=summary]{summary()}}, \code{\link[=fitmeasures]{fitmeasures()}}, \code{\link[=deviance]{deviance()}}, \code{\link[=logLik]{logLik()}} and \code{\link[=timing]{timing()}}
+report only what was computed. \code{\link[=add_loo]{add_loo()}} stores the LOO and WAIC
+post hoc; \code{\link[=loo]{loo()}} and \code{\link[=waic]{waic()}} compute on demand.}
 
 \item{vb_correction}{Logical indicating whether to apply a variational Bayes
 correction for the posterior mean vector of estimates. Defaults to \code{TRUE}.}
+
+\item{n_qmc}{Number of quasi-Monte Carlo nodes used by the VB mean
+correction. Defaults to \code{64}; see the Details section of \code{\link[=inlavaan]{inlavaan()}}.
+Values above \code{128} (the size
+of the stored Sobol table) require the \pkg{qrng} package. Ignored when
+\code{vb_correction = FALSE} or \code{vb_method = "gauss_hermite"}.}
+
+\item{vb_method}{Integration rule for the VB mean correction. \code{"sobol"}
+(default) averages over \code{n_qmc} scrambled Sobol nodes. \code{"gauss_hermite"}
+uses a deterministic rule instead: a three-point Gauss-Hermite rule along
+each principal axis of the Laplace covariance, \verb{2m + 1} nodes in all for
+\code{m} free parameters. It is exact whenever the log-posterior is quartic in
+whitened coordinates, and it gives the same shift on every run. Having no
+node sets to compare, it reports no quadrature error, so \code{vb_mcse_sigma}
+in \code{\link[=diagnostics]{diagnostics()}} is \code{NA}. Its cost grows with \code{m}: it is cheaper than
+the default below about 30 free parameters and dearer above. Experimental.}
 
 \item{marginal_method}{The method for approximating the marginal posterior
 distributions. Options include \code{"skewnorm"} (skew-normal), \code{"asymgaus"}
@@ -74,8 +103,36 @@ and \code{"none"} (or \code{FALSE}) applies no correction.}
 
 \item{samp_copula}{Logical. When \code{TRUE} (default), posterior samples are
 drawn using the copula method with the fitted marginals (e.g. skew-normal
-or asymmetric Gaussian), with NORTA correlation adjustment. When \code{FALSE},
-samples are drawn from the Gaussian (Laplace) approximation. Only re}
+or asymmetric Gaussian). When \code{FALSE}, samples are drawn from the
+Gaussian (Laplace) approximation.}
+
+\item{samp_norta}{Logical. When \code{TRUE}, the latent correlation matrix of
+the skew-normal copula is adjusted by the NORmal-To-Anything (NORTA)
+scheme of Cario and Nelson (1997) so that the Pearson correlations of
+the copula draws match those of the Laplace approximation after the
+nonlinear quantile transform. The adjustment never changes a marginal;
+it affects only summaries that involve several parameters at once, and
+in practice moves the correlations very little. Default \code{FALSE}. Only
+used when \code{samp_copula = TRUE} and \code{marginal_method = "skewnorm"}.}
+
+\item{cov_as_cor}{Logical. Residual and latent-disturbance covariance
+parameters (\verb{~~} between two observed or two latent variables) are
+always estimated on the correlation scale internally (an \code{atanh} link,
+the same as for \code{std.ov}/\code{std.lv}-standardised parameters); by default
+their reported marginal is then re-derived on the covariance scale
+\eqn{\sigma_i \sigma_j \rho} from a posterior sample (see
+\code{samp_copula}), because that is the scale lavaan/blavaan report by
+default. When \code{TRUE}, that re-derivation is skipped and each such
+parameter's own directly profiled correlation-scale marginal
+\eqn{\rho \in (-1, 1)} is reported instead -- useful for comparing the
+profiling machinery (skew-normal fit, VB, ...) against a
+correlation-scale reference without the sampling/copula step in
+between. Model estimation is identical either way; only what is
+reported for these parameters changes (and, correspondingly, their
+\code{mat} classification in the returned partable, \code{theta_cov}/\code{psi_cov}
+vs. \code{theta_cor}/\code{psi_cor}). Not the same as lavaan's \code{std.ov}/\code{std.lv},
+which re-parameterises the whole model on a standardised scale.
+Defaults to \code{FALSE}.}
 
 \item{sn_fit_ngrid}{Number of grid points to lay out per dimension when
 fitting the skew-normal marginals. A finer grid gives a better fit at the
@@ -93,7 +150,11 @@ temperature is included as an additional optimisation parameter.}
 is fitted to the posterior samples for covariance and defined parameters.
 When \code{FALSE}, these are summarised using kernel density estimation instead.}
 
-\item{control}{A list of control parameters for the optimiser.}
+\item{control}{A list of control parameters for the optimiser. For the
+default \code{"nlminb"}, INLAvaan raises the stock iteration ceilings to
+\code{iter.max = 1000} and \code{eval.max = 2000} (complex models can exhaust
+\code{nlminb()}'s own defaults of 150 and 200); any value supplied here
+overrides these.}
 
 \item{verbose}{Logical indicating whether to print progress messages.}
 
@@ -114,7 +175,9 @@ fitting. When \code{NULL} (default), serial execution is used unless the number
 of free parameters exceeds 120, in which case parallelisation is enabled
 automatically using all available physical cores. Set to \code{1L} to force
 serial execution. If \code{cores > 1}, marginal fits are distributed across
-cores using \code{\link[parallel:mclapply]{parallel::mclapply()}} (fork-based; no parallelism on Windows).}
+cores -- forked via \code{\link[parallel:mclapply]{parallel::mclapply()}} where that is safe, or over a
+PSOCK cluster (separate R processes) inside IDE R sessions (RStudio,
+Positron) and on Windows.}
 
 \item{...}{Additional arguments to be passed to the \link[lavaan:lavaan]{lavaan} model fitting
 function.}

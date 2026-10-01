@@ -19,17 +19,40 @@
 #'
 #' @param dp Default prior distributions for the different types of model
 #'   parameters; a named character vector as returned by [priors_for()].
-#' @param test Character indicating which post-estimation quantities to
-#'   compute. Defaults to "standard": posterior fit indices (PPP and DIC),
-#'   plus -- for models supported by the casewise machinery and fitted with
-#'   a mean structure -- the WAIC (reusing the fit's posterior draws, when
-#'   `nsamp >= 100`) and a full leave-one-out cross-validation whenever its
-#'   predicted serial cost is within a 10-second budget; both are stored
-#'   with the fit (see [loo()] and [waic()]). "none" skips all of these.
-#'   Include "loo" (e.g. `test = c("standard", "loo")`, or `test = "loo"`
-#'   alone) to force the full LOO regardless of the budget.
+#' @param test Character vector naming the post-estimation quantities to
+#'   compute and store with the fit. The atoms are `"ppp"` (posterior
+#'   predictive p-value), `"dic"` (deviance information criterion and its
+#'   `pD`), `"loo"` (leave-one-out cross-validation, see [loo()]) and
+#'   `"waic"` (see [waic()]). Three aliases stand for sets of atoms:
+#'   `"standard"` (the default) and its synonym `"default"` give
+#'   `c("ppp", "dic")`; `"full"` gives all four; `"none"` gives nothing.
+#'   Aliases and atoms may be mixed and are unioned, so
+#'   `test = c("standard", "loo")` adds the LOO to the default set. The LOO
+#'   and the WAIC come from one Taylor pass, so asking for either stores
+#'   both. They run only when asked for, with no time budget. On a model
+#'   the casewise machinery does not support (PML or ordinal data,
+#'   `conditional.x = TRUE`, multigroup two-level) they are skipped with a
+#'   warning and the rest of the fit proceeds. The fit records what was
+#'   requested and what was computed (`get_inlavaan_internal(fit, "test")`);
+#'   [summary()], [fitmeasures()], [deviance()], [logLik()] and [timing()]
+#'   report only what was computed. [add_loo()] stores the LOO and WAIC
+#'   post hoc; [loo()] and [waic()] compute on demand.
 #' @param vb_correction Logical indicating whether to apply a variational Bayes
 #'   correction for the posterior mean vector of estimates. Defaults to `TRUE`.
+#' @param n_qmc Number of quasi-Monte Carlo nodes used by the VB mean
+#'   correction. Defaults to `64`; see the Details section of [inlavaan()].
+#'   Values above `128` (the size
+#'   of the stored Sobol table) require the \pkg{qrng} package. Ignored when
+#'   `vb_correction = FALSE` or `vb_method = "gauss_hermite"`.
+#' @param vb_method Integration rule for the VB mean correction. `"sobol"`
+#'   (default) averages over `n_qmc` scrambled Sobol nodes. `"gauss_hermite"`
+#'   uses a deterministic rule instead: a three-point Gauss-Hermite rule along
+#'   each principal axis of the Laplace covariance, `2m + 1` nodes in all for
+#'   `m` free parameters. It is exact whenever the log-posterior is quartic in
+#'   whitened coordinates, and it gives the same shift on every run. Having no
+#'   node sets to compare, it reports no quadrature error, so `vb_mcse_sigma`
+#'   in [diagnostics()] is `NA`. Its cost grows with `m`: it is cheaper than
+#'   the default below about 30 free parameters and dearer above. Experimental.
 #' @param marginal_method The method for approximating the marginal posterior
 #'   distributions. Options include `"skewnorm"` (skew-normal), `"asymgaus"`
 #'   (two-piece asymmetric Gaussian), `"marggaus"` (marginalising the Laplace
@@ -46,8 +69,34 @@
 #'   (including posterior sampling for model fit indices).
 #' @param samp_copula Logical. When `TRUE` (default), posterior samples are
 #'   drawn using the copula method with the fitted marginals (e.g. skew-normal
-#'   or asymmetric Gaussian), with NORTA correlation adjustment. When `FALSE`,
-#'   samples are drawn from the Gaussian (Laplace) approximation. Only re
+#'   or asymmetric Gaussian). When `FALSE`, samples are drawn from the
+#'   Gaussian (Laplace) approximation.
+#' @param samp_norta Logical. When `TRUE`, the latent correlation matrix of
+#'   the skew-normal copula is adjusted by the NORmal-To-Anything (NORTA)
+#'   scheme of Cario and Nelson (1997) so that the Pearson correlations of
+#'   the copula draws match those of the Laplace approximation after the
+#'   nonlinear quantile transform. The adjustment never changes a marginal;
+#'   it affects only summaries that involve several parameters at once, and
+#'   in practice moves the correlations very little. Default `FALSE`. Only
+#'   used when `samp_copula = TRUE` and `marginal_method = "skewnorm"`.
+#' @param cov_as_cor Logical. Residual and latent-disturbance covariance
+#'   parameters (`~~` between two observed or two latent variables) are
+#'   always estimated on the correlation scale internally (an `atanh` link,
+#'   the same as for `std.ov`/`std.lv`-standardised parameters); by default
+#'   their reported marginal is then re-derived on the covariance scale
+#'   \eqn{\sigma_i \sigma_j \rho} from a posterior sample (see
+#'   `samp_copula`), because that is the scale lavaan/blavaan report by
+#'   default. When `TRUE`, that re-derivation is skipped and each such
+#'   parameter's own directly profiled correlation-scale marginal
+#'   \eqn{\rho \in (-1, 1)} is reported instead -- useful for comparing the
+#'   profiling machinery (skew-normal fit, VB, ...) against a
+#'   correlation-scale reference without the sampling/copula step in
+#'   between. Model estimation is identical either way; only what is
+#'   reported for these parameters changes (and, correspondingly, their
+#'   `mat` classification in the returned partable, `theta_cov`/`psi_cov`
+#'   vs. `theta_cor`/`psi_cor`). Not the same as lavaan's `std.ov`/`std.lv`,
+#'   which re-parameterises the whole model on a standardised scale.
+#'   Defaults to `FALSE`.
 #' @param sn_fit_ngrid Number of grid points to lay out per dimension when
 #'   fitting the skew-normal marginals. A finer grid gives a better fit at the
 #'   cost of more joint-log-posterior evaluations. Defaults to `21`.
@@ -60,7 +109,11 @@
 #' @param sn_fit_sample Logical. When `TRUE` (default), a parametric skew-normal
 #'   is fitted to the posterior samples for covariance and defined parameters.
 #'   When `FALSE`, these are summarised using kernel density estimation instead.
-#' @param control A list of control parameters for the optimiser.
+#' @param control A list of control parameters for the optimiser. For the
+#'   default `"nlminb"`, INLAvaan raises the stock iteration ceilings to
+#'   `iter.max = 1000` and `eval.max = 2000` (complex models can exhaust
+#'   `nlminb()`'s own defaults of 150 and 200); any value supplied here
+#'   overrides these.
 #' @param verbose Logical indicating whether to print progress messages.
 #' @param debug Logical indicating whether to return debug information.
 #' @param add_priors Logical indicating whether to include prior densities in
@@ -81,9 +134,22 @@
 #'   of free parameters exceeds 120, in which case parallelisation is enabled
 #'   automatically using all available physical cores. Set to `1L` to force
 #'   serial execution. If `cores > 1`, marginal fits are distributed across
-#'   cores using [parallel::mclapply()] (fork-based; no parallelism on Windows).
+#'   cores -- forked via [parallel::mclapply()] where that is safe, or over a
+#'   PSOCK cluster (separate R processes) inside IDE R sessions (RStudio,
+#'   Positron) and on Windows.
 #' @param ... Additional arguments to be passed to the [lavaan] model fitting
 #'   function.
+#'
+#' @details The VB mean correction integrates over `n_qmc` quasi-Monte Carlo
+#'   nodes, so it carries a quadrature error that falls as `n_qmc` rises. The
+#'   default of `64` keeps this error at roughly 0.05 posterior SDs -- on par
+#'   with the Monte Carlo error of a routine MCMC run, and small against the
+#'   shifts being corrected. Users may increase `n_qmc` to reduce the error
+#'   further, at a proportional cost in computation time; `diagnostics()`
+#'   reports the realised error per fit as `vb_mcse_sigma` per parameter and
+#'   `vb_mcse_max` globally, both in posterior-SD units. Setting
+#'   `vb_method = "gauss_hermite"` removes the random node set altogether; see
+#'   the `vb_method` argument.
 #'
 #' @seealso Typically, users will interact with the specific latent variable
 #'   model functions instead, including [acfa()], [asem()], and [agrowth()].
@@ -100,10 +166,14 @@ inlavaan <- function(
   dp = priors_for(),
   test = "standard",
   vb_correction = TRUE,
+  n_qmc = 64L,
+  vb_method = c("sobol", "gauss_hermite"),
   marginal_method = c("skewnorm", "asymgaus", "marggaus", "sampling"),
   marginal_correction = c("shortcut", "shortcut_fd", "hessian", "none"),
   nsamp = 1000,
   samp_copula = TRUE,
+  samp_norta = FALSE,
+  cov_as_cor = FALSE,
   sn_fit_ngrid = 21,
   sn_fit_logthresh = -6,
   sn_fit_temp = 1,
@@ -136,15 +206,13 @@ inlavaan <- function(
     marginal_correction <- match.arg(marginal_correction)
   }
   optim_method <- match.arg(optim_method)
+  vb_method <- match.arg(vb_method)
   if (isTRUE(debug)) {
     verbose <- TRUE
   }
-  # "loo" is INLAvaan-specific: strip it before `test` reaches lavaan
-  do_loo <- "loo" %in% test
-  test <- setdiff(test, "loo")
-  if (length(test) == 0L) {
-    test <- "none"
-  }
+  # `test` is an INLAvaan-only selection of post-estimation quantities (see
+  # resolve_test() in R/utils.R); it never reaches lavaan as typed
+  test_req <- resolve_test(test)
 
   lavargs <- list(...)
   lavargs$model <- model
@@ -153,7 +221,10 @@ inlavaan <- function(
   lavargs$verbose <- FALSE # FIXME: Need some quiet mode maybe
   lavargs$do.fit <- FALSE
   lavargs$parser <- "old" # To get priors parsed
-  lavargs$test <- test
+  # lavaan only ever sees "standard" or "none": its own test statistics are
+  # never computed under do.fit = FALSE, and INLAvaan's atoms ("loo", ...)
+  # are not lavaan-legal values
+  lavargs$test <- if (length(test_req) > 0L) "standard" else "none"
 
   if ("estimator" %in% names(lavargs)) {
     if (!(lavargs$estimator %in% c("ML", "PML"))) {
@@ -195,39 +266,6 @@ inlavaan <- function(
   n <- fit0@SampleStats@ntotal
   ceq.simple <- lavmodel@ceq.simple.only
   ceq.K <- lavmodel@ceq.simple.K # used to pack params/grads
-
-  # lavaan < 0.7-1.2707 computes a slightly inexact two-level FIML gradient
-  # for cases fully missing on the within-level variables: it keeps such
-  # cases but its gradient kernel mishandles the zero-observed pattern, so
-  # the optimiser uses a slightly wrong gradient (fixed upstream in lavaan
-  # PR #581). loo()/waic() are unaffected (the cluster kernels drop these
-  # rows), but the fitted estimates may be mildly off, so warn on affected
-  # lavaan versions only. Drop the version gate and this block once the
-  # minimum supported lavaan carries the fix.
-  if (
-    is_multilevel(lavdata) &&
-      isTRUE(lavsamplestats@missing.flag) &&
-      utils::packageVersion("lavaan") < "0.7.1.2707"
-  ) {
-    Xw <- lavdata@X[[1L]]
-    bidx <- lavdata@Lp[[1L]]$between.idx[[2L]]
-    wcols <- if (length(bidx) > 0L) {
-      seq_len(ncol(Xw))[-bidx]
-    } else {
-      seq_len(ncol(Xw))
-    }
-    n_fm <- sum(rowSums(!is.na(Xw[, wcols, drop = FALSE])) == 0L)
-    if (n_fm > 0L) {
-      cli_warn(c(
-        "{n_fm} case{?s} {?is/are} fully missing on the within-level
-         variables.",
-        "i" = "This version of lavaan computes a slightly inexact two-level
-         FIML gradient for such cases, so the estimates may be mildly
-         affected; update lavaan or remove these cases. {.fn loo} and
-         {.fn waic} handle them correctly."
-      ))
-    }
-  }
 
   # Partable and check for equality constraints
   pt <- inlavaanify_partable(lavpartable, dp, lavdata, lavoptions)
@@ -296,23 +334,23 @@ inlavaan <- function(
     }
     gll <- inlav_model_grad(x, lavmodel, lavsamplestats, lavdata, lavcache)
 
-    # Jacobian adjustment: d/dθ log p(y|x(θ)) = d/dx log p(y|x) * dx/dθ
-    jcb <- diag(jcb, length(jcb))
-
-    # This is the extra jacobian adjustment for covariances, since dx/dθ affects
-    # more than one place if covariance exists
-    sd1sd2 <- attr(x, "sd1sd2")
-    jcb <- jcb * sd1sd2 # this adjusts the correlation parameters (diagonals)
+    # Jacobian adjustment: d/dθ log p(y|x(θ)) = d/dx log p(y|x) * dx/dθ.
+    # The chain-rule Jacobian is a diagonal (per-parameter ginv_prime, times
+    # sd1sd2 for the correlation parameters) plus a handful of off-diagonal
+    # variance-into-covariance terms listed in jcb_mat, so the product is
+    # applied as vector work plus a short loop over those terms rather than
+    # ever forming the dense m x m matrix -- this sits inside every gradient
+    # call (optimiser, Hessian columns, VB node sweeps, marginal scans).
+    gll_th <- jcb * attr(x, "sd1sd2") * gll
     jcb_mat <- attr(x, "jcb_mat")
 
     if (!is.null(jcb_mat)) {
       for (k in seq_len(nrow(jcb_mat))) {
         i <- jcb_mat[k, 1]
         j <- jcb_mat[k, 2]
-        jcb[i, j] <- jcb_mat[k, 3]
+        gll_th[i] <- gll_th[i] + jcb_mat[k, 3] * gll[j]
       }
     }
-    gll_th <- as.numeric(jcb %*% gll) # this adjusts the cov parameters, if any
     if (isTRUE(ceq.simple)) {
       gll_th <- as.numeric(gll_th %*% ceq.K)
     } # Repack
@@ -359,11 +397,19 @@ inlavaan <- function(
   }
 
   if (optim_method == "nlminb") {
+    # nlminb()'s own defaults (iter.max = 150, eval.max = 200) are too tight
+    # for complex models, and running out is quiet: convergence = 1 surfaces
+    # only through diagnostics() or the fit-time warning. Raise the ceiling,
+    # letting an explicit user `control` win.
+    ctrl <- utils::modifyList(
+      list(iter.max = 1000L, eval.max = 2000L),
+      control
+    )
     opt <- nlminb(
       start = parstart,
       objective = ob,
       gradient = gr,
-      control = control
+      control = ctrl
     )
     theta_star <- opt$par
     if (isTRUE(verbose)) {
@@ -460,24 +506,78 @@ inlavaan <- function(
   timing <- add_timing(timing, "optim")
 
   ## ----- VB correction -------------------------------------------------------
-  vb_opt <- vb_shift <- vb_kld <- vb_kld_global <- n_qmc <- NA
+  vb_opt <- vb_shift <- vb_kld <- vb_kld_global <- vb_mcse <- NA
+  vb_n_qmc <- NA_integer_
   if (isTRUE(vb_correction)) {
     if (isTRUE(verbose)) {
       cli_progress_step(
-        "Performing VB correction.",
+        if (vb_method == "sobol") {
+          "Performing VB correction."
+        } else {
+          "Performing VB correction (Gauss-Hermite rule)."
+        },
         msg_done = "VB correction; mean |\U03B4| = {formatC(mean(abs(vb_shift) / sqrt(diag(Sigma_theta))),
                     format = 'f', digits = 3)}\U03C3."
       )
     }
 
-    # QMC noise (scrambled Sobol); scale n with dimension
-    n_qmc <- min(100L, max(30L, m + 20L))
-    us <- sobol_owen(n = n_qmc, d = m)
-    zs <- rbind(0, qnorm(us) %*% t(L)) # Add 0 to "lock at" mode
+    # Node weights stay NULL for the equal-weight Sobol rule. The Gauss-Hermite
+    # rule carries a weight per node, with the centre in the first row.
+    vb_w <- NULL
+    if (vb_method == "sobol") {
+      # QMC nodes (scrambled Sobol). The count is deliberately flat rather
+      # than scaled with m: the quadrature error is governed by the effective
+      # dimension and the smoothness of the integrand, not by m directly, and
+      # scaling down for small models simply starves them.
+      if (length(n_qmc) != 1L) {
+        cli_abort("{.arg n_qmc} must be a single integer of at least 2.")
+      }
+      vb_n_qmc <- suppressWarnings(as.integer(n_qmc))
+      if (is.na(vb_n_qmc) || vb_n_qmc < 2L) {
+        cli_abort("{.arg n_qmc} must be a single integer of at least 2.")
+      }
+      zs <- vb_nodes(vb_n_qmc, L)
+    } else {
+      # Deterministic rule on the principal axes of Sigma_theta. See
+      # vb_nodes_gauss_hermite() for why 2m + 1 nodes suffice.
+      vb_rule <- vb_nodes_gauss_hermite(Sigma_theta)
+      zs <- vb_rule$nodes
+      vb_w <- vb_rule$weights
+    }
 
-    vb_ob <- function(delta, mu0, Z) {
-      mu_new <- mu0 + as.numeric(L %*% delta)
+    # Fixed-point solver settings; see the iteration below. Convergence is
+    # judged on the step measured in the units the shift is reported in --
+    # posterior SDs -- rather than on the whitened step, so the tolerance is
+    # directly comparable to the size of correction that matters downstream.
+    vb_maxit <- 25L
+    vb_tol <- 1e-3
+    vb_sd <- sqrt(diag(Sigma_theta))
+    # Cap on how far a single step may travel, in posterior SDs. The step is a
+    # Newton step for a curvature of -H, which is only valid while the
+    # third-order remainder is small; on strongly skewed posteriors the first
+    # step can otherwise land outside the region where Sigma(theta) stays
+    # positive definite. Genuine shifts are a fraction of an SD, so this never
+    # binds on a well-behaved fit.
+    vb_maxstep <- 1
+
+    vb_ob_shift <- function(shift, mu0, Z) {
+      mu_new <- mu0 + shift
       ns <- nrow(Z)
+      if (!is.null(vb_w)) {
+        lp <- vapply(
+          seq_len(ns),
+          function(b) joint_lp(mu_new + Z[b, , drop = TRUE]),
+          numeric(1)
+        )
+        # The centre weight is negative once m > 3, so a failed log-likelihood
+        # (-1e40) at the centre would lower the objective. Treat any failed
+        # node as a failed objective instead.
+        if (any(!is.finite(lp) | lp <= -1e39)) {
+          return(1e40)
+        }
+        # Differences from the centre avoid cancelling large terms.
+        return(-1 * (lp[1] + sum(vb_w[-1] * (lp[-1] - lp[1]))))
+      }
       lp_total <- 0
       for (b in seq_len(ns)) {
         thetab <- mu_new + Z[b, , drop = TRUE]
@@ -486,36 +586,182 @@ inlavaan <- function(
       -1 * (lp_total / ns)
     }
 
-    vb_gr <- function(eta, mu0, Z) {
-      mu_new <- mu0 + as.numeric(L %*% eta)
-      ns <- nrow(Z)
-      lpgrad_total <- numeric(length(mu0))
-      for (b in seq_len(ns)) {
-        thetab <- mu_new + Z[b, , drop = TRUE]
-        lpgrad_total <- lpgrad_total + joint_lp_grad(thetab)
-      }
-      lpgrad_avg <- -1 * lpgrad_total / ns
-      as.numeric(t(L) %*% lpgrad_avg)
+    vb_ob <- function(delta, mu0, Z) {
+      vb_ob_shift(as.numeric(L %*% delta), mu0, Z)
     }
 
-    vb_opt <- nlminb(
-      start = rep(0, m),
-      objective = vb_ob,
-      gradient = vb_gr,
-      mu0 = theta_star,
-      Z = zs,
-      control = list(rel.tol = 1e-4)
+    # One sweep over the nodes: the mean score in the original parameter
+    # scale, plus its two half-set means. The halves come along free -- both
+    # are already computed here -- and their disagreement at the solution
+    # measures the quadrature error in the shift. Sobol points are nested, so
+    # the two halves are each a valid node set in their own right.
+    vb_sweep <- function(shift, mu0, Z) {
+      mu_new <- mu0 + shift
+      ns <- nrow(Z)
+      if (!is.null(vb_w)) {
+        # Weighted mean written as differences from the centre gradient, so
+        # the negative centre weight does not cancel large terms. The rule is
+        # deterministic, so there are no half-sets.
+        g0 <- joint_lp_grad(mu_new + Z[1, , drop = TRUE])
+        score <- g0
+        for (b in seq_len(ns)[-1]) {
+          g <- joint_lp_grad(mu_new + Z[b, , drop = TRUE])
+          score <- score + vb_w[b] * (g - g0)
+        }
+        return(list(score = score, gA = NULL, gB = NULL))
+      }
+      nhalf <- floor(ns / 2)
+      gA <- gB <- numeric(length(mu0))
+      for (b in seq_len(ns)) {
+        g <- joint_lp_grad(mu_new + Z[b, , drop = TRUE])
+        if (b <= nhalf) {
+          gA <- gA + g
+        } else {
+          gB <- gB + g
+        }
+      }
+      list(
+        score = (gA + gB) / ns,
+        gA = gA / nhalf,
+        gB = gB / (ns - nhalf)
+      )
+    }
+
+    vb_gA <- vb_gB <- numeric(m)
+    vb_gr <- function(delta, mu0, Z) {
+      sw <- vb_sweep(as.numeric(L %*% delta), mu0, Z)
+      vb_gA <<- sw$gA
+      vb_gB <<- sw$gB
+      as.numeric(t(L) %*% (-1 * sw$score))
+    }
+
+    # Fast path: fixed-point iteration. Splitting the objective into its
+    # quadratic part and a remainder r, and using t(L) %*% H %*% L = I with
+    # centred nodes, stationarity reduces to
+    # shift = shift + Sigma_theta %*% E[grad log pi] -- the Newton step for a
+    # curvature of -H is one multiplication by Sigma_theta. Where r really is
+    # third-order small this contracts in a few iterations and needs no
+    # objective evaluations, which is where nlminb spent half its node sweeps
+    # while still stopping short of convergence at its default tolerance.
+    #
+    # That premise fails on strongly skewed posteriors, where the first step can
+    # overshoot the region in which Sigma(theta) stays positive definite. An
+    # oversized step or a non-finite score is taken as the signal, and the solve
+    # falls back to nlminb, whose line search handles those cases.
+    # Anderson(1) acceleration on top of the fixed-point iteration. The plain
+    # map contracts at the spectral radius of I - Sigma_theta %*% Hbar, where
+    # Hbar is the curvature averaged over the node cloud rather than at the
+    # mode; that mismatch costs a near-constant factor per sweep, a sweep is
+    # a full pass of the gradient over the nodes, and on flat problems (the
+    # two-group models are the known case) the factor approaches 1 and the
+    # plain map stalls into the nlminb fallback. A secant estimate from
+    # consecutive steps removes the dominant error mode, roughly halving the
+    # sweep count and un-stalling the flat case. Convergence is still
+    # declared on the size of the raw Newton step -- the fixed-point
+    # residual -- so the accelerated solve stops at exactly the same
+    # criterion, and the same solution, as the plain one; acceleration only
+    # changes how fast it gets there. The extrapolation is skipped (plain
+    # step taken) whenever the secant is degenerate or would move further
+    # than the plain step allows.
+    vb_shift <- numeric(m)
+    vb_iter <- 0L
+    vb_move <- Inf
+    vb_fallback <- FALSE
+    vb_step_prev <- NULL
+    vb_shift_prev <- NULL
+    for (it in seq_len(vb_maxit)) {
+      vb_sw <- vb_sweep(vb_shift, theta_star, zs)
+      if (!all(is.finite(vb_sw$score))) {
+        vb_fallback <- TRUE
+        break
+      }
+      vb_gA <- vb_sw$gA
+      vb_gB <- vb_sw$gB
+      vb_step <- as.numeric(Sigma_theta %*% vb_sw$score)
+      vb_step[fp_idx] <- 0
+      vb_move <- max(abs(vb_step) / vb_sd)
+      if (vb_move > vb_maxstep) {
+        vb_fallback <- TRUE
+        break
+      }
+      if (vb_move < vb_tol) {
+        vb_shift <- vb_shift + vb_step
+        vb_iter <- it
+        break
+      }
+      vb_update <- vb_step
+      if (!is.null(vb_step_prev)) {
+        df <- vb_step - vb_step_prev
+        dx <- vb_shift - vb_shift_prev
+        denom <- sum(df^2)
+        if (denom > 0) {
+          gam <- sum(vb_step * df) / denom
+          cand <- vb_step - gam * (dx + df)
+          cand[fp_idx] <- 0
+          if (
+            all(is.finite(cand)) &&
+              max(abs(cand) / vb_sd) <= min(vb_maxstep, 2 * vb_move)
+          ) {
+            vb_update <- cand
+          }
+        }
+      }
+      vb_step_prev <- vb_step
+      vb_shift_prev <- vb_shift
+      vb_shift <- vb_shift + vb_update
+      vb_iter <- it
+    }
+    if (vb_move >= vb_tol) {
+      vb_fallback <- TRUE
+    }
+
+    if (isTRUE(vb_fallback)) {
+      # Optimise in whitened coordinates, where the problem is well conditioned.
+      vb_nl <- nlminb(
+        start = numeric(m),
+        objective = vb_ob,
+        gradient = vb_gr,
+        mu0 = theta_star,
+        Z = zs,
+        control = list(rel.tol = 1e-8)
+      )
+      vb_shift <- as.numeric(L %*% vb_nl$par)
+      # Under the fast path this block is independent of the rest, so imposing
+      # its known-zero optimum after the fact is exact.
+      vb_shift[fp_idx] <- 0
+      vb_iter <- vb_nl$iterations
+    }
+
+    # Quadrature error in the shift. With two half-sets the standard error of
+    # their mean is half their difference; a Newton step maps a score error
+    # into a shift error. QMC halves are negatively correlated and QMC error
+    # falls faster than root-n, so this errs on the conservative side.
+    if (is.null(vb_w)) {
+      vb_mcse <- abs(as.numeric(Sigma_theta %*% (vb_gA - vb_gB))) / 2
+      vb_mcse[fp_idx] <- 0
+    } else {
+      # The Gauss-Hermite rule has no node sets to compare, so it reports no
+      # error estimate.
+      vb_mcse <- rep(NA_real_, m)
+    }
+
+    vb_opt <- list(
+      par = vb_shift,
+      objective = vb_ob_shift(vb_shift, theta_star, zs),
+      iterations = vb_iter,
+      fallback = vb_fallback
     )
 
-    vb_shift <- as.numeric(L %*% vb_opt$par)
     vb_kld <- (vb_shift)^2 / (2 * diag(Sigma_theta))
     vb_kld_global <- lp_max + vb_opt$objective
   }
 
   vb <- list(
     opt = vb_opt,
-    n_qmc = n_qmc,
+    n_qmc = vb_n_qmc,
+    method = if (isTRUE(vb_correction)) vb_method else NA_character_,
     correction = vb_shift,
+    mcse = vb_mcse,
     kld = vb_kld,
     kld_global = vb_kld_global
   )
@@ -685,6 +931,8 @@ inlavaan <- function(
             logC = fit_sn$logC
           )
         )
+        # Keep the z-space fit so visual_debug() can draw the smooth SN curve
+        attr(vd, "sn_params") <- unlist(fit_sn[c("xi", "omega", "alpha", "logC")])
 
         # Adjust back to theta space
         fit_sn$xi <- theta_star[j] + fit_sn$xi * sqrt(Sigma_theta[j, j])
@@ -750,7 +998,9 @@ inlavaan <- function(
 
   ## ----- NORTA adjustment for SN copula sampling ----------------------------
   R_star <- NULL
-  if (marginal_method == "skewnorm" && isTRUE(samp_copula)) {
+  if (
+    marginal_method == "skewnorm" && isTRUE(samp_copula) && isTRUE(samp_norta)
+  ) {
     if (isTRUE(verbose)) {
       cli_progress_step(
         "Adjusting copula correlations (NORTA).",
@@ -769,7 +1019,8 @@ inlavaan <- function(
     sum(pt$free > 0 & grepl("cov", pt$mat)) > 0 ||
     any(pt$op == ":=") ||
     any(pt$op == "~*~")
-  has_extra_samp_work <- needs_draw_summaries || test != "none"
+  has_extra_samp_work <- needs_draw_summaries ||
+    any(c("ppp", "dic") %in% test_req)
   samp_env <- NULL
   if (isTRUE(verbose)) {
     samp_stage <- if (has_extra_samp_work) {
@@ -836,7 +1087,13 @@ inlavaan <- function(
   summ$Prior <- pt$prior[PTFREEIDX]
 
   ## ----- Sampling for covariances and defined params -------------------------
-  if (sum(pt$free > 0 & grepl("cov", pt$mat)) > 0) {
+  # cov_as_cor skips this re-derivation entirely: the per-axis marginal
+  # already computed above (postmargres) is left as the final reported
+  # value for these rows, which -- since g/ginv is atanh/tanh for
+  # theta_cov/psi_cov exactly as for theta_cor/psi_cor -- is already the
+  # correlation, not the covariance. Nothing upstream (pars_to_x(), priors,
+  # gradients) reads cov_as_cor, so estimation is unaffected either way.
+  if (!isTRUE(cov_as_cor) && sum(pt$free > 0 & grepl("cov", pt$mat)) > 0) {
     if (marginal_method == "sampling") {
       # Already covered by post_marg_sampling above
     } else {
@@ -894,38 +1151,46 @@ inlavaan <- function(
   timing <- add_timing(timing, "deltapars")
 
   ## ----- Compute ppp and dic -------------------------------------------------
-  if (test != "none") {
+  ppp <- dic_list <- NULL
+  if (any(c("ppp", "dic") %in% test_req)) {
     if (isTRUE(verbose)) {
-      samp_stage <- "Computing fit indices (PPP/DIC)"
+      samp_stage <- paste0(
+        "Computing fit indices (",
+        paste(toupper(intersect(c("ppp", "dic"), test_req)), collapse = "/"),
+        ")"
+      )
       cli_progress_update(.envir = samp_env)
     }
-    ppp <- get_ppp(
-      x_samp = x_samp,
-      lavmodel = lavmodel,
-      lavsamplestats = lavsamplestats,
-      lavdata = lavdata,
-      lavpartable = lavpartable,
-      cli_env = samp_env
-    )
-    dic_list <- get_dic(
-      x_samp = x_samp,
-      theta_star = theta_star_vbc,
-      pt = pt,
-      lavmodel = lavmodel,
-      loglik = function(x) {
-        inlav_model_loglik(
-          x,
-          lavmodel,
-          lavsamplestats,
-          lavdata,
-          lavoptions,
-          lavcache
-        )
-      },
-      cli_env = samp_env
-    )
-  } else {
-    ppp <- dic_list <- NULL
+    if ("ppp" %in% test_req) {
+      ppp <- get_ppp(
+        x_samp = x_samp,
+        lavmodel = lavmodel,
+        lavsamplestats = lavsamplestats,
+        lavdata = lavdata,
+        lavpartable = lavpartable,
+        h1 = fit0@h1,
+        cli_env = samp_env
+      )
+    }
+    if ("dic" %in% test_req) {
+      dic_list <- get_dic(
+        x_samp = x_samp,
+        theta_star = theta_star_vbc,
+        pt = pt,
+        lavmodel = lavmodel,
+        loglik = function(x) {
+          inlav_model_loglik(
+            x,
+            lavmodel,
+            lavsamplestats,
+            lavdata,
+            lavoptions,
+            lavcache
+          )
+        },
+        cli_env = samp_env
+      )
+    }
   }
   timing <- add_timing(timing, "test")
 
@@ -943,84 +1208,59 @@ inlavaan <- function(
     nsamp = nsamp,
     R_star = R_star
   )
-  # The default path (test = "standard") computes LOO/WAIC only for models
-  # the casewise kernels support, quietly, and (for LOO) only when the
-  # predicted serial cost fits a 10 s budget. An explicit "loo" in `test`
-  # always computes the full LOO.
-  casewise_ok <- tryCatch(
-    {
-      suppressWarnings(check_loo_model(int_fit))
-      TRUE
-    },
-    error = function(e) FALSE
-  )
-
-  loo_res <- NULL
-  if (isTRUE(do_loo) || (test != "none" && casewise_ok)) {
+  # LOO and WAIC are one Taylor pass (waic_from_taylor() reads the per-unit
+  # quantities inlav_loo() already computed), so asking for either atom
+  # computes and stores both, with no time budget. A model the casewise
+  # machinery rejects (check_loo_model(), called inside inlav_loo()) warns
+  # and skips them rather than failing the whole fit; the reason is kept in
+  # the `test` record below rather than only in the transient warning.
+  loo_res <- waic_res <- NULL
+  skipped <- character(0)
+  if (any(c("loo", "waic") %in% test_req)) {
     if (isTRUE(verbose)) {
-      samp_stage <- "Computing Taylor LOO"
+      samp_stage <- "Computing Taylor LOO and WAIC"
       cli_progress_update(.envir = samp_env)
     }
-    loo_res <- tryCatch(
+    loo_try <- tryCatch(
       inlav_loo(
         int = int_fit,
         eff_cores = resolve_loo_cores(cores),
-        verbose = FALSE,
-        max_seconds = if (isTRUE(do_loo)) Inf else 10
+        verbose = FALSE
       ),
-      inlavaan_loo_budget = function(e) {
-        if (isTRUE(verbose)) {
-          cli_alert_info(
-            "Skipping fit-time LOO (predicted cost exceeds 10 s); compute it
-             post hoc with {.fn loo} or {.fn add_loo}."
-          )
-        }
-        NULL
-      },
-      error = function(e) {
-        if (isTRUE(do_loo)) {
-          cli_warn(c(
-            "Skipping the fit-time LOO computation.",
-            "x" = conditionMessage(e)
-          ))
-        }
-        NULL
-      }
+      error = function(e) e
     )
-    timing <- add_timing(timing, "loo")
+    if (inherits(loo_try, "error")) {
+      msg <- conditionMessage(loo_try)
+      cli_warn(c(
+        "Skipping the LOO and WAIC requested through {.arg test}.",
+        "x" = msg,
+        "i" = "The rest of the fit is unaffected; the reason is stored in
+               {.code get_inlavaan_internal(fit, \"test\")$skipped}."
+      ))
+      skipped <- c(loo = msg, waic = msg)
+    } else {
+      loo_res <- loo_try
+      timing <- add_timing(timing, "loo")
+      waic_res <- waic_from_taylor(loo_res)
+      timing <- add_timing(timing, "waic")
+    }
   }
 
-  # WAIC from the draws already produced above, so only the casewise pass is
-  # paid; skipped for small nsamp, where p_waic estimates are meaningless.
-  # The reliability warning is left to print/explicit waic() calls.
-  waic_res <- NULL
-  if (test != "none" && casewise_ok && nsamp >= 100L) {
-    if (isTRUE(verbose)) {
-      samp_stage <- "Computing WAIC"
-      cli_progress_update(.envir = samp_env)
-    }
-    waic_res <- tryCatch(
-      suppressWarnings(
-        waic_from_draws(
-          int_fit,
-          x_samp,
-          eff_cores = resolve_loo_cores(cores)
-        )
-      ),
-      error = function(e) NULL
-    )
-    timing <- add_timing(timing, "waic")
-  }
+  computed <- test_atoms[c(
+    !is.null(ppp),
+    !is.null(dic_list),
+    !is.null(loo_res),
+    !is.null(waic_res)
+  )]
+  test_rec <- list(requested = test_req, computed = computed, skipped = skipped)
 
   if (isTRUE(verbose)) {
     # Close the sampling step with an overview; the specific fit measures
     # computed are listed on a separate info line below
-    fit_measures <- c(
-      if (!is.null(ppp)) c("PPP", "DIC"),
-      if (!is.null(loo_res)) "LOO",
-      if (!is.null(waic_res)) "WAIC"
-    )
-    samp_done <- if (needs_draw_summaries || length(fit_measures)) {
+    fit_measures <- toupper(computed)
+    samp_done <- if (
+      needs_draw_summaries || any(c("ppp", "dic") %in% computed)
+    ) {
       paste0("Summarise ", nsamp, " posterior draws.")
     } else {
       paste0("Draw ", nsamp, " posterior samples.")
@@ -1034,6 +1274,14 @@ inlavaan <- function(
   }
 
   ## ----- Output --------------------------------------------------------------
+  # Cosmetic only, applied last: relabel theta_cov/psi_cov as theta_cor/
+  # psi_cor in the RETURNED partable so it honestly reflects what was
+  # reported above. Nothing upstream reads pt$mat again after this point.
+  if (isTRUE(cov_as_cor)) {
+    pt$mat[pt$mat == "theta_cov"] <- "theta_cor"
+    pt$mat[pt$mat == "psi_cov"] <- "psi_cor"
+  }
+
   out <- list(
     coefficients = coefs,
     mloglik = mloglik,
@@ -1042,8 +1290,11 @@ inlavaan <- function(
     ppp = ppp,
     loo = loo_res,
     waic = waic_res,
+    test = test_rec,
     optim_method = optim_method,
     marginal_method = marginal_method,
+    samp_copula = samp_copula,
+    samp_norta = samp_norta,
     theta_star_novbc = as.numeric(theta_star),
     theta_star = as.numeric(theta_star_vbc),
     Sigma_theta = Sigma_theta,
@@ -1107,10 +1358,14 @@ acfa <- function(
   dp = priors_for(),
   test = "standard",
   vb_correction = TRUE,
+  n_qmc = 64L,
+  vb_method = c("sobol", "gauss_hermite"),
   marginal_method = c("skewnorm", "asymgaus", "marggaus", "sampling"),
   marginal_correction = c("shortcut", "shortcut_fd", "hessian", "none"),
   nsamp = 1000,
   samp_copula = TRUE,
+  samp_norta = FALSE,
+  cov_as_cor = FALSE,
   sn_fit_ngrid = 21,
   sn_fit_logthresh = -6,
   sn_fit_temp = 1,
@@ -1159,10 +1414,14 @@ asem <- function(
   dp = priors_for(),
   test = "standard",
   vb_correction = TRUE,
+  n_qmc = 64L,
+  vb_method = c("sobol", "gauss_hermite"),
   marginal_method = c("skewnorm", "asymgaus", "marggaus", "sampling"),
   marginal_correction = c("shortcut", "shortcut_fd", "hessian", "none"),
   nsamp = 1000,
   samp_copula = TRUE,
+  samp_norta = FALSE,
+  cov_as_cor = FALSE,
   sn_fit_ngrid = 21,
   sn_fit_logthresh = -6,
   sn_fit_temp = 1,
@@ -1209,10 +1468,14 @@ agrowth <- function(
   dp = priors_for(),
   test = "standard",
   vb_correction = TRUE,
+  n_qmc = 64L,
+  vb_method = c("sobol", "gauss_hermite"),
   marginal_method = c("skewnorm", "asymgaus", "marggaus", "sampling"),
   marginal_correction = c("shortcut", "shortcut_fd", "hessian", "none"),
   nsamp = 1000,
   samp_copula = TRUE,
+  samp_norta = FALSE,
+  cov_as_cor = FALSE,
   sn_fit_ngrid = 21,
   sn_fit_logthresh = -6,
   sn_fit_temp = 1,

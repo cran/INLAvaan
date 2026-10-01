@@ -50,17 +50,30 @@ computed from \eqn{\Sigma_\theta}. Large values indicate near-singularity.}
 \item{\code{vb_kld_global}}{Global KL divergence from the VB mean correction
 (NA if VB correction was not applied).}
 \item{\code{vb_applied}}{1 if VB correction was applied, 0 otherwise.}
+\item{\code{vb_shift_max}}{Maximum, across parameters, of the absolute
+VB correction in posterior-SD units (max |\code{vb_shift_sigma}|). This
+is the quantity the fit-time check tests. NA if the VB correction was
+not applied.}
 \item{\code{kld_max}}{Maximum per-parameter KL divergence from the VB correction.}
 \item{\code{kld_mean}}{Mean per-parameter KL divergence.}
+\item{\code{vb_mcse_max}}{Maximum, across parameters, of the estimated
+quadrature error of the VB shift, in posterior-SD units. See
+\code{vb_mcse_sigma} below. NA under
+\code{vb_method = "gauss_hermite"}.}
+\item{\code{vb_mcse_mean}}{Mean estimated quadrature error of the VB
+shift, in posterior-SD units.}
 \item{\code{nmad_max}}{Maximum normalised max-absolute-deviation across
 marginals (skew-normal method only; NA otherwise).}
 \item{\code{nmad_mean}}{Mean NMAD across marginals.}
+\item{\code{scan_end_mass_max}}{Maximum, across parameters, of
+\code{scan_end_mass} (see below). NA unless the skew-normal marginal
+method was used.}
 }
 
 \strong{Per-parameter diagnostics} (\code{type = "param"}):
 A data frame with columns:
 \describe{
-\item{\code{param}}{Parameter name.}
+\item{\code{names}}{Parameter name.}
 \item{\code{grad}}{Analytic gradient of the negative log-posterior at the
 mode. Should be ~0 at convergence.}
 \item{\code{grad_num}}{Numerical (finite-difference) gradient at the mode.
@@ -74,17 +87,56 @@ posterior-SD units. Should be ~0 at convergence.}
 \item{\code{kld}}{Per-parameter KL divergence from the VB correction.}
 \item{\code{vb_shift}}{VB correction shift (in original scale).}
 \item{\code{vb_shift_sigma}}{VB shift in units of posterior SD.}
+\item{\code{vb_mcse_sigma}}{Estimated quadrature error of the VB shift, in
+posterior-SD units. The shift is the solution of an integral evaluated by
+quasi-Monte Carlo over a finite node set, so it carries an integration
+error of its own. This estimates that error by splitting the node set in
+half and taking half the disagreement between the two half-set solutions.
+Read it as an error bar on \code{vb_shift_sigma}: a value of 0.05 means
+the reported posterior mean of that parameter could move by roughly that
+much, in SD units, purely from the choice of node set. It runs
+conservative, because the two halves are negatively correlated and
+quasi-Monte Carlo error falls faster than root-n. It is exactly zero for
+parameters whose shift is pinned by the saturated-means fast path, since
+no quadrature is used there. It is NA for every parameter under
+\code{vb_method = "gauss_hermite"}, whose rule is deterministic.}
 \item{\code{nmad}}{Normalised max-absolute-deviation of the skew-normal fit
 (NA when not using the skewnorm method).}
+\item{\code{alpha}}{Shape parameter of the fitted skew-normal marginal,
+on the unconstrained scale. Zero is a Gaussian marginal, and the sign
+gives the direction of the skew (NA when not using the skewnorm
+method).}
+\item{\code{scan_end_mass}}{Mass the fitted marginal puts outside the
+window that was scanned to fit it,
+\eqn{F(\hat\theta_j - 4 s_j) + 1 - F(\hat\theta_j + 4 s_j)}, where
+\eqn{F} is the fitted skew-normal distribution function,
+\eqn{\hat\theta_j} the posterior mode and \eqn{s_j} the Laplace
+posterior SD. The marginal is fitted inside that window only, so mass
+outside it is extrapolation, and when this is large the 2.5\\% and
+97.5\\% credible limits are the numbers to distrust. A Gaussian marginal
+gives \eqn{2\Phi(-4)} = 6.3e-05, and healthy fits sit between 1e-03 and
+1e-02 (NA when not using the skewnorm method).}
 }
 
 \strong{Fit-time warnings}: \code{\link[=inlavaan]{inlavaan()}} runs these checks once at the end
 of every fit and emits a single consolidated warning (condition class
-\code{"inlavaan_diagnostics_warning"}) when any of them look off: the
-optimiser did not converge, \code{mode_shift_max} exceeds 0.1,
-any marginal has NMAD above 0.1, the VB correction shifted a posterior
-mean by more than 1 posterior SD, or the Hessian condition number exceeds
-1e8. A healthy fit stays silent. Silence the check with
+\code{"inlavaan_diagnostics_warning"}) when any of them looks off:
+\itemize{
+\item the optimiser did not converge;
+\item \code{mode_shift_max} above 0.1 posterior SDs;
+\item any marginal with \code{nmad} above 0.1;
+\item any marginal with \code{scan_end_mass} above 0.05;
+\item \code{vb_shift_max} above 1 posterior SD;
+\item \code{hess_cond} above 1e8.
+}
+Three of these checks have calibration behind them. Over 1,046 simulated
+fits with MCMC references, the Spearman correlation with the worst-case
+posterior-mean discrepancy was 0.64 for the VB shift in SD units, 0.59 for
+the scan-endpoint mass and 0.48 for the NMAD. The convergence, mode-shift
+and condition-number checks are rules of thumb. Every number above is a
+package default, chosen so that a healthy fit stays silent, and not a
+calibrated cut-off: a tripped check is a prompt to look again, and silence
+is not a certificate of accuracy. Silence the check with
 \code{suppressWarnings()}, or selectively by handling the condition class.
 }
 \examples{

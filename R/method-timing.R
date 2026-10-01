@@ -6,10 +6,17 @@
 #' @param object An object of class [INLAvaan].
 #' @param what Character vector of timing segment names to return, or
 #'   \code{"all"} to return every segment. Defaults to \code{"total"}.
-#'   Available segments (depending on model options): \code{"init"},
-#'   \code{"optim"}, \code{"vb"}, \code{"loglik"}, \code{"marginals"},
-#'   \code{"norta"}, \code{"sampling"}, \code{"covariances"},
-#'   \code{"definedpars"}, \code{"deltapars"}, \code{"test"}, \code{"total"}.
+#'   Available segments (depending on model options): \code{"init"} (which
+#'   includes the lavaan model setup), \code{"optim"}, \code{"vb"},
+#'   \code{"loglik"}, \code{"marginals"}, \code{"norta"}, \code{"sampling"},
+#'   \code{"covariances"}, \code{"definedpars"}, \code{"deltapars"},
+#'   \code{"test"}, \code{"loo"}, \code{"waic"}, \code{"total"}. The
+#'   segments are disjoint and \code{"total"} is their sum. \code{"loo"} and
+#'   \code{"waic"} are recorded only when the fit computed them, i.e.
+#'   \code{test} (see [inlavaan()]) included \code{"loo"}, \code{"waic"} or
+#'   \code{"full"} and the model is supported (see [loo()]); requesting
+#'   either otherwise gives an error explaining why, distinct from
+#'   requesting a misspelled segment name.
 #' @param ... Currently unused.
 #'
 #' @returns A named numeric vector (class \code{c("timing.INLAvaan",
@@ -42,6 +49,13 @@
 #' @export
 setGeneric("timing", function(object, ...) standardGeneric("timing"))
 
+# "loo" and "waic" are the only segments not always recorded: they are timed
+# only when `test` asked for "loo"/"waic"/"full" and the model is one the
+# casewise machinery supports (see inlavaan.R). Requesting one that is
+# absent therefore needs a message distinct from a genuinely
+# unknown/misspelled segment name.
+timing_conditional_segments <- c("loo", "waic")
+
 #' @name timing
 #' @rdname timing
 #' @aliases timing,INLAvaan-method
@@ -58,10 +72,41 @@ setMethod(
     } else {
       unknown <- setdiff(what, available)
       if (length(unknown) > 0L) {
-        cli_abort(c(
-          "Unknown timing segment{?s}: {.val {unknown}}.",
+        not_run <- intersect(unknown, timing_conditional_segments)
+        misspelled <- setdiff(unknown, not_run)
+        rec <- test_record(object@external$inlavaan_internal)
+        asked <- not_run[not_run %in% rec$requested]
+        not_asked <- setdiff(not_run, asked)
+        msg <- c(
+          if (length(misspelled) > 0L) {
+            c(
+              "x" = "Unknown timing segment{qty(length(misspelled))}{?s}: {.val {misspelled}}."
+            )
+          },
+          if (length(not_run) > 0L) {
+            c(
+              "x" = "{.val {not_run}} {qty(length(not_run))}{?was/were} not
+                     computed for this fit.",
+              if (length(asked) > 0L) {
+                c(
+                  "i" = "{.val {asked}} {qty(length(asked))}{?was/were}
+                         requested through {.arg test} but skipped:
+                         {rec$skipped[[asked[[1L]]]]}"
+                )
+              },
+              if (length(not_asked) > 0L) {
+                c(
+                  "i" = "The LOO and WAIC run at fit time only when
+                         {.arg test} includes {.val loo}, {.val waic} or
+                         {.val full}; compute {qty(length(not_asked))}{?it/them}
+                         post hoc with {.fn loo}/{.fn waic} or {.fn add_loo}."
+                )
+              }
+            )
+          },
           "i" = "Available: {.val {available}}."
-        ))
+        )
+        cli_abort(msg)
       }
     }
 
@@ -81,7 +126,8 @@ print.timing.INLAvaan <- function(x, ...) {
     if (s < 60) {
       return(sprintf("%.2f s", s))
     }
-    if (s < 3600) { # nocov start
+    if (s < 3600) {
+      # nocov start
       return(sprintf("%.1f min", s / 60))
     }
     sprintf("%.2f hr", s / 3600) # nocov end

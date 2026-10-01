@@ -4,6 +4,8 @@
 \alias{waic}
 \alias{waic.INLAvaan}
 \alias{waic.inlavaan_internal}
+\alias{print.inlavaan_waic}
+\alias{summary.inlavaan_waic}
 \title{Widely Applicable Information Criterion for INLAvaan Models}
 \usage{
 waic(x, ...)
@@ -12,7 +14,7 @@ waic(x, ...)
   x,
   type = c("auto", "loso", "loco"),
   units = NULL,
-  nsamp = NULL,
+  second_order = TRUE,
   cores = NULL,
   verbose = FALSE,
   ...
@@ -22,11 +24,15 @@ waic(x, ...)
   x,
   type = c("auto", "loso", "loco"),
   units = NULL,
-  nsamp = NULL,
+  second_order = TRUE,
   cores = NULL,
   verbose = FALSE,
   ...
 )
+
+\method{print}{inlavaan_waic}(x, ...)
+
+\method{summary}{inlavaan_waic}(object, ...)
 }
 \arguments{
 \item{x}{A fitted \link{INLAvaan} object (or its \code{inlavaan_internal} list).}
@@ -42,64 +48,96 @@ models. \code{"loso"} on a two-level model scores the conditional
 \item{units}{Optional integer vector of unit indices to score; defaults
 to all units.}
 
-\item{nsamp}{Number of posterior draws. Defaults to the \code{nsamp} used when
-fitting the model.}
+\item{second_order}{Logical; include the second-order (Hessian) terms
+(default \code{TRUE}). \code{FALSE} gives the first-order WAIC, which equals the
+first-order LOO exactly -- and inherits its bias: a first-order score
+overstates the elpd by \eqn{\tfrac12 p_D} in the limit, so candidates of
+different dimension cannot be compared on it (see \code{\link[=loo]{loo()}}).}
 
-\item{cores}{Number of cores for evaluating draws. The default \code{NULL}
-runs serially; parallelism must be requested explicitly.}
+\item{cores}{Number of cores for differentiating the unit scores. The
+default \code{NULL} runs serially; parallelism must be requested
+explicitly.}
 
 \item{verbose}{Logical; print progress (default \code{FALSE}).}
+
+\item{object}{A fitted \link{INLAvaan} object, or an \code{inlavaan_waic} result.}
 }
 \value{
 An object of class \code{inlavaan_waic}: a list with \code{per_unit}
 (pointwise \code{lpd}, \code{p_waic}, \code{elpd_waic}, with the same \code{unit}/\code{group}
 identification as \code{\link[=loo]{loo()}}), \code{estimates} (matrix with rows
 \code{elpd_waic}, \code{p_waic}, \code{waic} and columns \code{Estimate}, \code{SE}), \code{type},
-\code{n_units}, \code{n_groups}, and \code{nsamp}.
+\code{flavour}, \code{n_units}, \code{n_groups}, \code{n_lpd_ok} (units whose second-order
+lpd exists), \code{second_order} (whether it was requested) and
+\code{use_second} (whether it was used). \code{summary()} is an alias for
+\code{print()}: it prints the same output and returns the result invisibly.
 }
 \description{
-Computes the WAIC of a fitted \link{INLAvaan} model from unit log-likelihoods
-evaluated over posterior draws. Single-level models are scored per
-subject; two-level models are scored per cluster by default, matching the
-units used by \code{\link[=loo]{loo()}}. For a two-level model \code{type = "loso"} instead
-scores the \emph{conditional} (leave-one-unit-out) WAIC; see Details.
+Computes the WAIC of a fitted \link{INLAvaan} model in closed form from the
+fit's Laplace summary -- the same per-unit Taylor quantities behind
+\code{\link[=loo]{loo()}}, with no posterior draws and no Monte Carlo error. Single-level
+models are scored per subject; two-level models are scored per cluster by
+default, matching the units used by \code{\link[=loo]{loo()}}. For a two-level model
+\code{type = "loso"} instead scores the \emph{conditional} (leave-one-unit-out)
+WAIC; see Details.
 }
 \details{
-For each posterior draw \eqn{\theta_s} (drawn with the same copula
-sampler used for the fit's posterior summaries) and unit \eqn{u}, the
-log-likelihood \eqn{\log p(y_u \mid \theta_s)} is evaluated; then
-\eqn{\mathrm{lpd}_u = \log \tfrac{1}{S}\sum_s p(y_u \mid \theta_s)},
-\eqn{p_{\mathrm{waic},u} = \mathrm{var}_s \log p(y_u \mid \theta_s)}, and
+Writing \eqn{\ell_u(\theta) = \log p(y_u \mid \theta)} and expanding it
+to second order about the posterior mode, with the posterior taken as
+\eqn{N(\theta^*, \Omega)}, both WAIC terms are available in closed form:
+the pointwise log predictive density \eqn{\mathrm{lpd}_u} is the same
+Gaussian integral \code{\link[=loo]{loo()}} computes, and the penalty is the polynomial
+\deqn{p_{\mathrm{waic},u} = \mathrm{Var}[\ell_u(\theta)]
+  = s_u^\top \Omega\, s_u
+  + \tfrac12 \mathrm{tr}\!\left[(H_u \Omega)^2\right],}
+with \eqn{s_u} and \eqn{H_u} the unit's score and Hessian. Then
 \eqn{\mathrm{elpd}_{\mathrm{waic}} = \sum_u (\mathrm{lpd}_u -
-p_{\mathrm{waic},u})} with \eqn{\mathrm{WAIC} = -2\,
-\mathrm{elpd}_{\mathrm{waic}}}. Unlike \code{\link[=loo]{loo()}}, this is a sampling-based
-estimate: results vary with the random draws, and units with
-\eqn{p_{\mathrm{waic},u} > 0.4} trigger a reliability warning (also
-annotated when printing). The same model restrictions as \code{\link[=loo]{loo()}} apply,
-and so does the flavour rule: fits with \code{fixed.x = TRUE} are scored
-conditionally on the exogenous covariates, fits with \code{fixed.x = FALSE}
-jointly (see \code{\link[=loo]{loo()}}).
+p_{\mathrm{waic},u})} and \eqn{\mathrm{WAIC} = -2\,
+\mathrm{elpd}_{\mathrm{waic}}}.
+
+\strong{Existence.} \eqn{p_{\mathrm{waic},u}} is a polynomial in the posterior
+moments, so unlike the lpd and log CPO integrals of \code{\link[=loo]{loo()}} it is finite
+for every unit and carries no condition of its own. The second-order WAIC
+therefore exists exactly where its lpd term does: where
+\eqn{\Omega^{-1} - H_u} is positive definite, equivalently
+\eqn{k_{\min} > -1} for the spectrum \eqn{k} of \eqn{-\Omega H_u}. The
+log CPO condition \eqn{k_{\max} < 1} is irrelevant here, since the WAIC
+reads no case-deletion term: a unit whose deleted posterior is improper
+can still carry an exact second-order WAIC. Where the lpd term fails,
+every estimate is reported at \emph{first order over all units} and warns --
+\eqn{\mathrm{elpd}_{\mathrm{waic}}} is a headline predictive score, and
+mixing two Taylor orders within one reported number is exactly what
+\code{\link[=loo]{loo()}} refuses for \eqn{\mathrm{elpd}_{\mathrm{loo}}} (the mixed
+alternative is reserved for \code{p_loo}, a secondary diagnostic). That
+fallback is exact rather than merely lower-order: the identity
+\eqn{\mathrm{lpd}^{(1)}_u - p^{(1)}_{\mathrm{waic},u} = \log
+\mathrm{CPO}^{(1)}_u} holds pointwise, so the first-order WAIC \emph{is} the
+first-order LOO score. No other threshold is applied: as in \code{\link[=loo]{loo()}},
+existence is the only condition the package acts on.
+
+The same model restrictions as \code{\link[=loo]{loo()}} apply, and so does the flavour
+rule: fits with \code{fixed.x = TRUE} are scored conditionally on the
+exogenous covariates, fits with \code{fixed.x = FALSE} jointly (see \code{\link[=loo]{loo()}}).
 
 \strong{Marginal vs conditional WAIC (two-level models).} The default
 per-cluster scoring is the \emph{marginal} WAIC, which corresponds to
 leave-one-cluster-out cross-validation -- prediction for a \emph{new} cluster.
 Setting \code{type = "loso"} scores the \emph{conditional} WAIC, corresponding to
 leave-one-unit-out -- prediction for a new observation within an
-\emph{observed} cluster (each row contributes the conditional density of its
-observed entries given the rest of its cluster). The two answer different
-questions and are easily conflated (Merkle, Furr & Rabe-Hesketh, 2019);
-the per-cluster marginal is the usual model-comparison target, so it is
-the default, and \code{type = "loso"} warns. This matches \code{loo(type = "loso")}
--- the two compute the same estimand by sampling and by Taylor expansion.
+\emph{observed} cluster. The two answer different questions and are easily
+conflated (Merkle, Furr & Rabe-Hesketh, 2019); the per-cluster marginal
+is the usual model-comparison target, so it is the default, and
+\code{type = "loso"} warns. This matches \code{loo(type = "loso")} -- the two read
+the same estimand off the same expansion.
 
-Under the default \code{test = "standard"}, \code{\link[=inlavaan]{inlavaan()}} computes the WAIC at
-fit time by reusing the posterior draws the fit already produced (when
-the model is supported and \code{nsamp >= 100}), and
-stores it with the fit: \code{waic(fit)} then returns the stored result when
-called with default arguments, and \code{\link[=fitmeasures]{fitmeasures()}} reports \code{waic},
-\code{p_waic}, \code{se_waic} as part of \code{"all"} for free. If the \code{loo} package is
-attached it masks this generic, but dispatch on INLAvaan objects
-continues to work.
+When \code{\link[=inlavaan]{inlavaan()}}'s \code{test} includes \code{"loo"} or \code{"waic"} (e.g.
+\code{test = "full"}), the WAIC is derived at fit time from the same Taylor
+pass as the LOO at no extra cost and stored with the fit: \code{waic(fit)}
+then returns the stored result when called with default arguments, and
+\code{\link[=fitmeasures]{fitmeasures()}} reports \code{waic}, \code{p_waic}, \code{se_waic} as part of \code{"all"}
+for free. Under the default \code{test = "standard"} nothing is stored and
+\code{waic(fit)} computes it on demand. If the \code{loo} package is attached it
+masks this generic, but dispatch on INLAvaan objects continues to work.
 }
 \examples{
 \donttest{

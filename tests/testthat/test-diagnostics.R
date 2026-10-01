@@ -12,6 +12,15 @@ fit <- acfa(
   vb_correction = FALSE,
   marginal_method = "marggaus"
 )
+# The default marginal method, so the skew-normal columns are populated.
+fit_sn <- acfa(
+  mod,
+  dat,
+  verbose = FALSE,
+  nsamp = 3,
+  test = "none",
+  vb_correction = FALSE
+)
 
 # ---- diagnostics() ----
 
@@ -30,11 +39,15 @@ test_that("diagnostics(type = 'global') returns named numeric vector", {
     "mode_shift_max",
     "hess_cond",
     "vb_applied",
+    "vb_shift_max",
     "vb_kld_global",
     "kld_max",
     "kld_mean",
+    "vb_mcse_max",
+    "vb_mcse_mean",
     "nmad_max",
-    "nmad_mean"
+    "nmad_mean",
+    "scan_end_mass_max"
   )
   expect_named(dg, expected_names)
   expect_equal(unname(dg["npar"]), length(coef(fit)))
@@ -50,6 +63,27 @@ test_that("diagnostics(type = 'param') returns data frame", {
     c("names", "grad", "grad_num", "grad_diff", "mode_shift_sigma") %in%
       names(dp)
   ))
+})
+
+test_that("diagnostics() reports the skew-normal marginal fit", {
+  glob <- diagnostics(fit_sn)
+  dp <- diagnostics(fit_sn, type = "param")
+  expect_true(all(c("alpha", "scan_end_mass") %in% names(dp)))
+  expect_true(all(is.finite(dp$alpha)))
+  expect_true(all(is.finite(dp$scan_end_mass)))
+  expect_true(all(dp$scan_end_mass > 0 & dp$scan_end_mass < 1))
+  # A healthy fit leaves next to nothing outside the scanned window: the
+  # Gaussian reference is 6.3e-05 and this model sits near 2.5e-04.
+  expect_lt(max(dp$scan_end_mass), 0.05)
+  expect_equal(glob[["scan_end_mass_max"]], max(dp$scan_end_mass))
+})
+
+test_that("the skew-normal diagnostics are NA for another method", {
+  glob <- diagnostics(fit)
+  dp <- diagnostics(fit, type = "param")
+  expect_true(is.na(glob[["scan_end_mass_max"]]))
+  expect_true(all(is.na(dp$alpha)))
+  expect_true(all(is.na(dp$scan_end_mass)))
 })
 
 # ---- fit-time diagnostics warnings ----
@@ -95,6 +129,24 @@ test_that("warn_fit_diagnostics() flags high NMAD marginals by name", {
   expect_match(conditionMessage(w), "NMAD")
   expect_match(conditionMessage(w), names(coef(fit))[1], fixed = TRUE)
   expect_match(conditionMessage(w), "1 other") # top 3 shown, 1 elided
+})
+
+test_that("a healthy skew-normal fit passes warn_fit_diagnostics() silently", {
+  int <- INLAvaan:::get_inlavaan_internal(fit_sn)
+  expect_no_warning(INLAvaan:::warn_fit_diagnostics(int))
+})
+
+test_that("warn_fit_diagnostics() flags a marginal that outruns the scan", {
+  int <- INLAvaan:::get_inlavaan_internal(fit_sn)
+  # Ten times the fitted scale leaves about 0.71 of the mass outside the
+  # window that was scanned, well past the 0.05 tolerance.
+  int$approx_data[1, "omega"] <- 10 * int$approx_data[1, "omega"]
+  w <- expect_warning(
+    INLAvaan:::warn_fit_diagnostics(int),
+    class = "inlavaan_diagnostics_warning"
+  )
+  expect_match(conditionMessage(w), "beyond the scanned")
+  expect_match(conditionMessage(w), names(coef(fit_sn))[1], fixed = TRUE)
 })
 
 test_that("warn_fit_diagnostics() flags large VB shifts", {
@@ -158,6 +210,27 @@ test_that("timing(what = ...) selects specific segments", {
 
 test_that("timing rejects unknown segments", {
   expect_error(timing(fit, what = "nonexistent"), "Unknown")
+})
+
+test_that("timing distinguishes a not-run loo/waic from an unknown segment", {
+  # fit above uses test = "none", so "loo"/"waic" are valid segment names
+  # that simply were not computed for this fit
+  expect_error(timing(fit, what = "loo"), "not computed", fixed = TRUE)
+  expect_error(timing(fit, what = "waic"), "not computed", fixed = TRUE)
+  expect_error(timing(fit, what = c("loo", "nonexistent")), "Unknown")
+  expect_error(timing(fit, what = c("loo", "nonexistent")), "not computed", fixed = TRUE)
+})
+
+test_that("timing segments are disjoint and sum to the total", {
+  tt <- timing(fit, what = "all")
+  # the lavaan setup is inside "init", not a second set of segments; the
+  # absolute start_time stamp is not a duration and must not be exposed
+  expect_false(any(c("start_time", "ov.names", "SampleStats") %in% names(tt)))
+  expect_equal(
+    unname(tt[["total"]]),
+    sum(tt[setdiff(names(tt), "total")]),
+    tolerance = 1e-8
+  )
 })
 
 test_that("print.timing.INLAvaan works", {

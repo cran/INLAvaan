@@ -14,12 +14,8 @@ compare(x, y, ..., fit.measures = NULL, loo = FALSE)
 \S4method{anova}{INLAvaan}(object, ...)
 }
 \arguments{
-\item{x}{An \link{INLAvaan} (or \code{inlavaan_internal}) object used as the
-\strong{baseline} (null) model. It is included in the comparison table and
-passed to \link[lavaan:fitMeasures]{fitMeasures()} for incremental indices.}
-
-\item{y, ...}{One or more \link{INLAvaan} (or \code{inlavaan_internal}) objects to
-compare against the baseline.}
+\item{x, y, ...}{Two or more \link{INLAvaan} (or \code{inlavaan_internal}) objects
+fitted to the same data.}
 
 \item{fit.measures}{Character vector of additional fit-measure names to
 include (e.g. \code{"BRMSEA"}, \code{"BCFI"}). Use \code{"all"} to include every
@@ -43,11 +39,11 @@ Compare two or more Bayesian SEM fitted with INLAvaan, reporting model-fit
 statistics and (optionally) fit indices side by side.
 }
 \details{
-The first argument \code{x} serves as the \strong{baseline} (null) model.
-All models (including the baseline) appear in the comparison table. The
-baseline is also passed to \link[lavaan:fitMeasures]{fitMeasures()} when
-incremental fit indices (BCFI, BTLI, BNFI) are requested via
-\code{fit.measures}.
+All models appear in the comparison table. When incremental fit indices
+(BCFI, BTLI, BNFI) are requested via \code{fit.measures}, they are scaled
+against the independence (null) model, fitted once on the data of the
+first model and shared by every model in the table (see
+\code{\link[=bfit_indices]{bfit_indices()}}).
 
 The default table always includes:
 \itemize{
@@ -55,7 +51,8 @@ The default table always includes:
 \item \strong{Marg.Loglik}: Approximated marginal log-likelihood.
 \item \strong{logBF}: Natural-log Bayes factor relative to the best model.
 \item \strong{DIC} / \strong{pD}: Deviance Information Criterion and effective number
-of parameters (when \code{test != "none"} was used during fitting).
+of parameters (when the fit computed the DIC, i.e. \code{test} included
+\code{"dic"} during fitting; the default \code{"standard"} does).
 }
 
 Set \code{fit.measures} to a character vector of measure names (anything
@@ -63,12 +60,17 @@ returned by \link[lavaan:fitMeasures]{fitMeasures()}) to append extra columns.
 Use \code{fit.measures = "all"} to include every available measure.
 
 Set \code{loo = TRUE} to compare models by leave-one-out cross-validation
-(see \code{\link[=loo]{loo()}}). This appends \strong{ELPD} / \strong{SE} (the second-order Taylor
-expected log predictive density and its standard error), \strong{p_loo}, and,
+(see \code{\link[=loo]{loo()}}). This appends \strong{ELPD} / \strong{SE} (the Taylor expected log
+predictive density and its standard error), \strong{p_loo}, and,
 against the best-ELPD model, the difference \strong{elpd_diff} with its
 \emph{paired} standard error \strong{se_diff} computed from the pointwise
 contributions (the appropriate uncertainty for nested or same-data
-comparisons). The table is then sorted by descending ELPD. All models
+comparisons). Every model is scored at one common Taylor order, the
+lowest any of them can supply: if some unit of some model has no
+second-order term, all models are compared at first order, since
+otherwise a change of estimator between models would read as a
+difference between the models themselves. The order used is stated when
+the table is printed. The table is then sorted by descending ELPD. All models
 must be fitted to the same data with matching units; units are paired
 by id rather than by row order, so fits that stack groups differently
 -- a pooled fit against a multigroup fit, or multigroup fits with
@@ -83,7 +85,8 @@ score flavour (see \code{\link[=loo]{loo()}}): mixing fits with modelled covaria
 additionally require identical variable sets across models, while
 conditional scores require only matching outcome variables -- covariate
 sets may differ, which is the covariate-selection setting. Stored LOO
-results (\code{test = "loo"} or \code{\link[=add_loo]{add_loo()}}) are reused.
+results (\code{test} including \code{"loo"} or \code{"full"}, or \code{\link[=add_loo]{add_loo()}}) are
+reused.
 
 \code{anova()} is disabled for \code{INLAvaan} fits -- there is no direct Bayesian
 analogue of the classical likelihood-ratio test -- and points here instead.

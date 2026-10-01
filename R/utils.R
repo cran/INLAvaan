@@ -15,7 +15,8 @@ ginv_base <- function(X, tol = sqrt(.Machine$double.eps)) {
   pos <- s$d > max(tol * s$d[1], 0)
   if (all(pos)) {
     s$v %*% (1 / s$d * t(s$u))
-  } else if (!any(pos)) { # nocov start
+  } else if (!any(pos)) {
+    # nocov start
     array(0, dim(X)[2:1])
   } else {
     s$v[, pos, drop = FALSE] %*%
@@ -53,8 +54,16 @@ as_fun_string <- function(f) {
 
 # Check if matrix is a bad covariance (not PD, or contains NA/NaN/Inf)
 is_bad_cov <- function(mat) {
-  if (any(!is.finite(mat))) return(TRUE)
-  tryCatch({ chol(mat); FALSE }, error = function(e) TRUE)
+  if (any(!is.finite(mat))) {
+    return(TRUE)
+  }
+  tryCatch(
+    {
+      chol(mat)
+      FALSE
+    },
+    error = function(e) TRUE
+  )
 }
 
 # Nearest PD via eigenvalue clamping
@@ -74,8 +83,8 @@ make_pd <- function(X, tol = 1e-8) {
 #'   list. If missing, the entire list is returned. Common elements include
 #'   `"coefficients"`, `"summary"`, `"Sigma_theta"`, `"vcov_x"`,
 #'   `"theta_star"`, `"approx_data"`, `"pdf_data"`, `"partable"`,
-#'   `"marginal_method"`, `"nsamp"`, `"mloglik"`, `"DIC"`, `"ppp"`,
-#'   `"vb"`, `"opt"`, `"timing"`, `"visual_debug"`.
+#'   `"marginal_method"`, `"nsamp"`, `"mloglik"`, `"DIC"`, `"ppp"`, `"loo"`,
+#'   `"waic"`, `"test"`, `"vb"`, `"opt"`, `"timing"`, `"visual_debug"`.
 #'
 #' @returns The full `inlavaan_internal` list, or the named element when
 #'   `what` is supplied.
@@ -110,13 +119,75 @@ get_inlavaan_internal <- function(object, what) {
   if (missing(what)) {
     return(int)
   }
-  if (!what %in% names(int)) { # nocov start
+  if (!what %in% names(int)) {
+    # nocov start
     cli_abort(c(
       "Element {.val {what}} not found in the internal list.",
       "i" = "Available: {.val {names(int)}}."
     ))
   } # nocov end
   int[[what]]
+}
+
+# The post-estimation quantities `test` can name, in reporting order, and
+# the aliases that stand for sets of them.
+test_atoms <- c("ppp", "dic", "loo", "waic")
+test_aliases <- list(
+  none = character(0),
+  standard = c("ppp", "dic"),
+  default = c("ppp", "dic"),
+  full = test_atoms
+)
+
+# Expand `test` (atoms and aliases, freely mixed) into the atoms it names,
+# in canonical order and without duplicates. Unknown values are an error.
+resolve_test <- function(test) {
+  valid <- c(names(test_aliases), test_atoms)
+  if (!is.character(test) || length(test) == 0L || anyNA(test)) {
+    cli_abort(c(
+      "{.arg test} must be a character vector.",
+      "i" = "Valid values: {.val {valid}}."
+    ))
+  }
+  bad <- setdiff(test, valid)
+  if (length(bad) > 0L) {
+    cli_abort(c(
+      "Unknown value{?s} in {.arg test}: {.val {bad}}.",
+      "i" = "Valid values: {.val {valid}}."
+    ))
+  }
+  atoms <- c(
+    unlist(
+      test_aliases[intersect(test, names(test_aliases))],
+      use.names = FALSE
+    ),
+    intersect(test, test_atoms)
+  )
+  test_atoms[test_atoms %in% atoms]
+}
+
+# The record of what `test` asked for and what the fit holds. Fits saved
+# before the record existed are read off the stored objects instead.
+test_record <- function(int) {
+  rec <- int[["test"]]
+  if (is.null(rec)) {
+    computed <- test_atoms[c(
+      !is.null(int$ppp),
+      !is.null(int$DIC),
+      !is.null(int$loo),
+      !is.null(int$waic)
+    )]
+    rec <- list(
+      requested = computed,
+      computed = computed,
+      skipped = character(0)
+    )
+  }
+  rec
+}
+
+has_test <- function(int, what) {
+  what %in% test_record(int)$computed
 }
 
 # Helper function to add timing information. Adapted by Haziq Jamil. Original
@@ -129,7 +200,8 @@ add_timing <- function(timing, part) {
   timing
 }
 
-is_lavaan <- function(object) { # nocov start
+is_lavaan <- function(object) {
+  # nocov start
   is(object, "lavaan") & attr(class(object), "package") == "lavaan"
 }
 
@@ -167,17 +239,75 @@ dmode <- function(x, na.rm = TRUE) {
   d$x[which.max(d$y)]
 }
 
+# Forking (mclapply) is fast and zero-copy, but it is unavailable on Windows
+# and unsafe inside threaded IDE R sessions -- RStudio's console and
+# Positron's ark kernel -- where forked children can die silently and
+# mclapply returns errors instead of results (the same reason
+# future/parallelly disable multicore there). The embedding program is
+# checked rather than IDE environment variables, which leak into integrated
+# terminals where forking is safe. INLAVAAN_FORK=0/1 overrides the
+# detection (used by tests to exercise the cluster path).
+fork_is_safe <- function() {
+  override <- Sys.getenv("INLAVAAN_FORK")
+  if (override %in% c("0", "1")) {
+    return(override == "1") # nocov
+  }
+  if (.Platform$OS.type != "unix") {
+    return(FALSE) # nocov
+  }
+  # The embedding program identifies the IDE kernels directly; the env vars
+  # are a belt-and-braces fallback (they may also leak into IDE-integrated
+  # terminals, where the only cost is PSOCK startup in a session where fork
+  # would have worked).
+  prog <- tolower(basename(commandArgs(FALSE)[1L]))
+  if (prog %in% c("rstudio", "ark")) {
+    return(FALSE) # nocov
+  }
+  if (identical(Sys.getenv("RSTUDIO"), "1")) {
+    return(FALSE) # nocov
+  }
+  !identical(Sys.getenv("POSITRON"), "1")
+}
+
 # ---------------------------------------------------------------------------
-# Parallel or serial lapply with cli progress (chunked for parallel)
+# Parallel or serial lapply with cli progress (chunked for parallel).
+# Parallelism forks where that is safe and otherwise runs a PSOCK cluster
+# (separate R processes), so `cores > 1` behaves the same in every front
+# end: terminal, RStudio, Positron, VS Code, and on Windows.
 # ---------------------------------------------------------------------------
-run_parallel_or_serial <- function(m, FUN, cores = 1L, verbose = FALSE,
-                                   msg_serial = NULL, msg_parallel = NULL,
-                                   msg_done = NULL) {
-  if (cores > 1L) { # nocov start
+run_parallel_or_serial <- function(
+  m,
+  FUN,
+  cores = 1L,
+  verbose = FALSE,
+  msg_serial = NULL,
+  msg_parallel = NULL,
+  msg_done = NULL
+) {
+  if (cores > 1L) {
+    # nocov start
+    use_fork <- fork_is_safe()
+    if (!use_fork) {
+      cl <- parallel::makeCluster(cores)
+      on.exit(parallel::stopCluster(cl), add = TRUE)
+      # Ship FUN (and its closure) to the workers once; the per-chunk calls
+      # below then send only the indices.
+      .inlavaan_parallel_fun <- FUN
+      parallel::clusterExport(
+        cl,
+        ".inlavaan_parallel_fun",
+        envir = environment()
+      )
+      cluster_fun <- function(j) .inlavaan_parallel_fun(j)
+      environment(cluster_fun) <- globalenv()
+    }
     # Parallel: process in chunks of `cores` for progress feedback
     if (verbose) {
-      msg <- if (!is.null(msg_parallel)) msg_parallel
-             else "Processing {m} items ({cores} cores)."
+      msg <- if (!is.null(msg_parallel)) {
+        msg_parallel
+      } else {
+        "Processing {m} items ({cores} cores)."
+      }
       done <- 0L
       cli_progress_step(
         msg,
@@ -188,18 +318,26 @@ run_parallel_or_serial <- function(m, FUN, cores = 1L, verbose = FALSE,
     chunk_ids <- split(seq_len(m), ceiling(seq_len(m) / cores))
     results <- vector("list", m)
     for (ch in chunk_ids) {
-      results[ch] <- parallel::mclapply(ch, FUN, mc.cores = cores)
+      results[ch] <- if (use_fork) {
+        parallel::mclapply(ch, FUN, mc.cores = cores)
+      } else {
+        parallel::parLapply(cl, ch, cluster_fun)
+      }
       if (verbose) {
         done <- max(ch)
         cli_progress_update()
       }
     }
-  } else { # nocov end
+  } else {
+    # nocov end
     # Serial with per-item progress
     if (verbose) {
       j <- 0L
-      msg <- if (!is.null(msg_serial)) msg_serial
-             else "Processing {j}/{m} item{?s}."
+      msg <- if (!is.null(msg_serial)) {
+        msg_serial
+      } else {
+        "Processing {j}/{m} item{?s}."
+      }
       cli_progress_step(
         msg,
         msg_done = if (is.null(msg_done)) msg else msg_done,

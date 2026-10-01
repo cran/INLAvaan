@@ -124,8 +124,8 @@ From this, marginal posterior distributions for each parameter can be obtained b
 
 Once the marginal posterior distributions have been obtained, we can further use these to compute any derived quantities of interest via copula sampling.
 The posterior predictive p-values [@gelman1996posterior] and Deviance Information Criterion [DIC, @spiegelhalter2002bayesian] are computed this way.
-Under the default `test = "standard"`, leave-one-out cross-validation and WAIC results (see the model comparison section below) are also computed at fit time and stored with the fit, whenever the model supports them and the additional cost is small.
-Often, the posterior sampling takes longer than the model fitting itself, so the number of samples can be controlled via the `nsamp` argument (default is `nsamp = 1000`), or the post-fitting computations can be skipped altogether (`test = "none"`).
+The `test` argument names which of these post-estimation quantities to compute: the default `test = "standard"` computes the PPP and the DIC, `test = "full"` adds the leave-one-out cross-validation and WAIC results (see the model comparison section below) and stores them with the fit, and `test = "none"` skips them all.
+Often, the posterior sampling takes longer than the model fitting itself, so the number of samples can be controlled via the `nsamp` argument (default is `nsamp = 1000`).
 
 ## Methods
 
@@ -201,7 +201,7 @@ Definitions and worked examples are in the [Bayesian fit indices article](https:
 ### Diagnostics
 
 The `diagnostics()` function reports convergence and approximation-quality metrics for the fitted model.
-Global diagnostics (`type = "global"`) check whether the optimiser converged, and quantify how well the skew-normal marginals match the joint posterior (via KL divergence and NMAD).
+Global diagnostics (`type = "global"`) check whether the optimiser converged, and quantify how well the skew-normal marginals match the joint posterior (via KL divergence and NMAD), including how much mass a fitted marginal leaves beyond the window that was scanned to fit it (`scan_end_mass_max`).
 Per-parameter diagnostics (`type = "param"`) provide gradient norms and KL contributions for each free parameter, which is useful for identifying any problematic parameters.
 
 ```{r}
@@ -245,7 +245,7 @@ compare(fit, fit2)
 As a note, there have been several criticisms of the use of Bayes factors for model comparison, particularly in the context of SEMs [@tendeiro2019review; @schad2023workflow].
 Leave-one-out cross-validation [LOO, @vehtari2017practical] and the widely applicable information criterion [WAIC, @watanabe2010asymptotic] are popular alternatives which compare models on out-of-sample predictive accuracy instead; see @merkle2019bayesian for their use with latent variable models.
 Both are implemented in `{INLAvaan}`.
-The function `loo()` requires neither refitting nor sampling, computing the statistic using a Taylor approximation of the case-deletion posterior, while `waic()` reuses the fit's own posterior draws.
+The functions `loo()` and `waic()` require neither refitting nor sampling: both are computed in closed form from the same Taylor expansion around the fit's Laplace summary.
 
 ```{r}
 #| label: results-loo

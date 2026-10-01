@@ -1,3 +1,7 @@
+# Extended LOO suite pinned to reference values. It runs in CI, and
+# test-loo-loso.R covers the core LOO on CRAN.
+skip_on_cran()
+
 # Conditional-flavour LOO for fixed.x fits: units are scored by the
 # predictive density of their outcomes given their covariates, matching the
 # (conditional) likelihood the model was fitted with.
@@ -70,7 +74,7 @@ ll_at_mode <- function(fit) {
   )
   opts <- fit@Options
   opts$estimator <- "ML"
-  INLAvaan:::lavaan___lav_model_loglik(
+  lavaan:::lav_model_loglik(
     lavdata = int$lavdata,
     lavsamplestats = int$lavsamplestats,
     lavimplied = lavaan::lav_model_implied(lm_x),
@@ -87,7 +91,13 @@ test_that("conditional LOSO on a fixed.x fit matches reference values", {
   expect_equal(res_c$elpd_2, -1165.6523740521, tolerance = 1e-4)
   expect_equal(res_c$se_1, 21.0799322283, tolerance = 1e-3)
   expect_equal(res_c$se_2, 21.5461686423, tolerance = 1e-3)
-  expect_equal(res_c$p_loo_2, 58.1103250541, tolerance = 1e-2)
+  # Some units here have no second-order lpd and contribute their first-order
+  # difference to p_loo; elpd_loo keeps its second order
+  expect_equal(res_c$n_ok, res_c$n_units)
+  expect_lt(res_c$n_lpd_ok, res_c$n_units)
+  expect_true(res_c$use_second)
+  expect_equal(res_c$p_loo_2, 60.1929381913, tolerance = 1e-2)
+  expect_equal(unname(res_c$estimates["p_loo", "Estimate"]), res_c$p_loo_2)
 
   pu <- res_c$per_unit[c(1L, 45L, 90L), ]
   expect_equal(
@@ -101,7 +111,7 @@ test_that("conditional LOSO on a fixed.x fit matches reference values", {
     tolerance = 1e-4
   )
 
-  expect_output(print(res_c), "conditionally on the exogenous covariates")
+  expect_output(print(res_c), "Leave-one-subject-out")
 })
 
 test_that("conditional unit logliks sum to the fitted likelihood", {
@@ -326,11 +336,9 @@ test_that("conditional LOCO with within-level covariates matches reference value
 })
 
 test_that("waic scores fixed.x fits conditionally", {
-  set.seed(1)
-  w <- suppressWarnings(waic(fit_c, nsamp = 100))
+  w <- suppressWarnings(waic(fit_c))
   expect_equal(w$flavour, "conditional")
   expect_true(all(is.finite(w$per_unit$lpd)))
-  expect_output(print(w), "conditionally on the exogenous covariates")
 })
 
 test_that("compare(loo = TRUE) enforces the flavour rules", {

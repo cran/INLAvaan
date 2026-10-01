@@ -43,7 +43,7 @@ fit2_ms <- acfa(
   dat,
   meanstructure = TRUE,
   marginal_method = "marggaus",
-  vb_correction = FALSE,  
+  vb_correction = FALSE,
   verbose = FALSE,
   nsamp = 3,
   test = "none"
@@ -71,10 +71,17 @@ test_that("compare() print runs without error", {
 test_that("compare() with fit.measures appends extra columns", {
   cmp <- compare(fit1, fit2, fit.measures = "margloglik")
   expect_true("margloglik" %in% names(cmp))
-  expect_output(print(cmp), "Baseline model")
+  expect_output(print(cmp), "Bayesian Model Comparison")
+  expect_no_match(
+    paste(capture.output(print(cmp)), collapse = ""),
+    "Baseline model"
+  )
 })
 
-test_that("compare() includes DIC/pD when test != 'none'", {
+test_that("compare() includes DIC/pD when the fit computed the DIC", {
+  skip_on_cran()
+  # the default test = "standard" computes the DIC but no fit-time LOO/WAIC,
+  # so nothing here warns
   fit1_std <- acfa(mod_null, dat, verbose = FALSE, nsamp = 3)
   fit2_std <- acfa(mod_full, dat, verbose = FALSE, nsamp = 3)
   cmp <- compare(fit1_std, fit2_std)
@@ -91,6 +98,7 @@ test_that("compare.inlavaan_internal S3 method works", {
 })
 
 test_that("compare() warns when mean-structure treatments differ", {
+  skip_on_cran()
   fit_ms <- acfa(
     mod_null,
     dat,
@@ -118,6 +126,7 @@ test_that("compare() warns when mean-structure treatments differ", {
 })
 
 test_that("compare() accepts more than two models via ...", {
+  skip_on_cran()
   fit_speed <- acfa(mod_speed, dat, verbose = FALSE, nsamp = 3, test = "none")
   cmp <- compare(fit1, fit2, fit_speed)
   expect_equal(nrow(cmp), 3)
@@ -149,24 +158,65 @@ test_that("compare(loo = TRUE) appends ELPD columns with paired SEs", {
   )
   expect_output(print(cmp), "paired differences")
 
-  # Stored LOO results are reused
-  cmp2 <- compare(add_loo(fit1_ms), add_loo(fit2_ms), loo = TRUE)
+  # Stored LOO results are reused; add_loo() also stores the WAIC (same
+  # Taylor pass), which warns on this fixture (a unit with no second-order
+  # lpd)
+  cmp2 <- compare(
+    suppressWarnings(add_loo(fit1_ms)),
+    suppressWarnings(add_loo(fit2_ms)),
+    loo = TRUE
+  )
   expect_equal(cmp2$ELPD, cmp$ELPD)
 })
 
+test_that("compare(loo = TRUE) scores every model at one common order", {
+  # Both models clean: second order throughout
+  cmp2 <- compare(fit1_ms, fit2_ms, loo = TRUE)
+  expect_equal(attr(cmp2, "loo_order"), 2L)
+  expect_output(print(cmp2), "second-order")
+
+  # A doctored LOO stored on one model only: inflating Omega drives some of
+  # its units past k = 1, so it has no second-order total while its rival
+  # still does. compare() reuses stored results, so this reaches the table.
+  S <- get_inlavaan_internal(fit1_ms)$Sigma_theta
+  bad <- suppressWarnings(loo(fit1_ms, Omega = S * 4, cores = 1L))
+  expect_false(bad$use_second)
+  fit1_bad <- fit1_ms
+  fit1_bad@external$inlavaan_internal$loo <- bad
+
+  good <- loo(fit2_ms)
+  expect_true(good$use_second)
+
+  # The clean model comes down to first order too, rather than meeting a
+  # first-order rival at second order
+  cmp <- compare(fit1_bad, fit2_ms, loo = TRUE)
+  expect_equal(attr(cmp, "loo_order"), 1L)
+  expect_true(any(abs(cmp$ELPD - good$elpd_1) < 1e-3))
+  expect_false(any(abs(cmp$ELPD - good$elpd_2) < 1e-3))
+  expect_output(print(cmp), "first-order")
+  expect_output(print(cmp), "no second-order term")
+})
+
 test_that("compare(loo = TRUE) aborts for models on different data", {
-  fit3 <- acfa(
-    mod_null,
-    dat[1:20, ],
-    meanstructure = TRUE,
-    verbose = FALSE,
-    nsamp = 3,
-    test = "none"
+  # Twenty rows are too few to keep the skew-normal tails inside the scanned
+  # window, so the fit-time endpoint-mass check fires. That is the expected
+  # small-sample behaviour of the diagnostic, not a fault in this fixture.
+  fit3 <- suppressWarnings(
+    acfa(
+      mod_null,
+      dat[1:20, ],
+      meanstructure = TRUE,
+      verbose = FALSE,
+      nsamp = 3,
+      test = "none"
+    ),
+    classes = "inlavaan_diagnostics_warning"
   )
   expect_error(compare(fit1_ms, fit3, loo = TRUE), "same data")
 })
 
 test_that("compare(loo = TRUE) aborts when the variable sets differ", {
+  skip_on_cran()
   fit9 <- acfa(
     mod_speed,
     dat,
@@ -179,6 +229,7 @@ test_that("compare(loo = TRUE) aborts when the variable sets differ", {
 })
 
 test_that("compare(loo = TRUE) aborts when conditional outcome sets differ", {
+  skip_on_cran()
   # Both fixed.x = TRUE (conditional flavour), but the outcome variable sets
   # differ (covariate sets may differ under conditional scoring, but outcomes
   # must match) -- distinct from the joint-flavour "same set of observed
@@ -192,26 +243,53 @@ test_that("compare(loo = TRUE) aborts when conditional outcome sets differ", {
     textual =~ x4 + x5 + x6
     visual ~ ageyr
   "
-  suppressWarnings(fitA <- asem(
-    modA,
-    dat,
-    fixed.x = TRUE,
-    meanstructure = TRUE,
-    verbose = FALSE,
-    nsamp = 3,
-    test = "none"
-  ))
-  suppressWarnings(fitB <- asem(
-    modB,
-    dat,
-    fixed.x = TRUE,
-    meanstructure = TRUE,
-    verbose = FALSE,
-    nsamp = 3,
-    test = "none"
-  ))
+  suppressWarnings(
+    fitA <- asem(
+      modA,
+      dat,
+      fixed.x = TRUE,
+      meanstructure = TRUE,
+      verbose = FALSE,
+      nsamp = 3,
+      test = "none"
+    )
+  )
+  suppressWarnings(
+    fitB <- asem(
+      modB,
+      dat,
+      fixed.x = TRUE,
+      meanstructure = TRUE,
+      verbose = FALSE,
+      nsamp = 3,
+      test = "none"
+    )
+  )
   expect_error(
     suppressWarnings(compare(fitA, fitB, loo = TRUE)),
     "outcome variables"
   )
+})
+test_that("compare() scales incremental indices against the independence model", {
+  fit_a <- acfa(
+    mod_null,
+    dat,
+    verbose = FALSE,
+    nsamp = 50,
+    vb_correction = FALSE,
+    marginal_method = "marggaus"
+  )
+  fit_b <- acfa(
+    mod_full,
+    dat,
+    verbose = FALSE,
+    nsamp = 50,
+    vb_correction = FALSE,
+    marginal_method = "marggaus"
+  )
+  cmp <- compare(fit_a, fit_b, fit.measures = c("BCFI", "BTLI"))
+  expect_true(all(is.finite(cmp$BCFI)))
+  # The first model is no longer its own baseline, so it does not sit at 0
+  expect_gt(cmp$BCFI[cmp$Model == "fit_a"], 0.3)
+  expect_true(all(cmp$BCFI <= 1))
 })

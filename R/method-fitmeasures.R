@@ -1,49 +1,54 @@
 # --- Bayesian fit index helpers -----------------------------------------------
 
-# Saturated log-likelihood (constant for ML; sum across groups)
-# Under FIML, uses the pattern-based formula to stay on the same scale as
-# inlav_model_loglik (which delegates to lavaan:::lav_model_loglik).
-compute_loglik_sat <- function(lavsamplestats, lavdata) {
+# Saturated log-likelihood (constant for ML; sum across groups). lavaan
+# stores it in the fit's h1 slot for every model type it supports, including
+# two-level and missing-data fits, so that is read first. The single-level
+# formulas below remain as a fallback for objects without an h1 slot. Under
+# FIML they use the pattern-based formula to stay on the same scale as
+# inlav_model_loglik (which delegates to lavaan___lav_model_loglik).
+compute_loglik_sat <- function(object, lavsamplestats, lavdata) {
+  h1 <- tryCatch(object@h1$logl$loglik, error = function(e) NULL)
+  if (is.numeric(h1) && length(h1) == 1L && is.finite(h1)) {
+    return(h1)
+  }
+  # nocov start
   ngroups <- lavdata@ngroups
   logl_sat <- 0
   for (g in seq_len(ngroups)) {
     if (lavsamplestats@missing.flag) {
       # nocov start
-      # positional: argument names changed in lavaan >= 0.7
-      # (Yp/Mu/Sigma/x.idx/x.mean/x.cov -> yp/mu/sigma_1/x_idx/x_mean/x_cov)
       logl_sat <- logl_sat +
-        lavaan___lav_mvnorm_missing_loglik_samplestats(
-          lavsamplestats@missing[[g]], # Yp
-          lavsamplestats@mean[[g]], # Mu
-          lavsamplestats@cov[[g]], # Sigma
-          lavsamplestats@x.idx[[g]], # x.idx
-          lavsamplestats@mean.x[[g]], # x.mean
-          lavsamplestats@cov.x[[g]] # x.cov
+        lavaan___lav_mvn_mi_loglik_samp(
+          yp = lavsamplestats@missing[[g]],
+          mu = lavsamplestats@mean[[g]],
+          sigma_1 = lavsamplestats@cov[[g]],
+          x_idx = lavsamplestats@x.idx[[g]],
+          x_mean = lavsamplestats@mean.x[[g]],
+          x_cov = lavsamplestats@cov.x[[g]]
         )
     } else {
       # nocov end
-      # positional: argument names changed in lavaan >= 0.7
-      # (sample.mean/sample.cov/sample.nobs/Mu/Sigma/x.idx/x.mean/x.cov ->
-      #  sample_mean/sample_cov/sample_nobs/mu/sigma_1/x_idx/x_mean/x_cov)
       logl_sat <- logl_sat +
-        lavaan___lav_mvnorm_loglik_samplestats(
-          lavsamplestats@mean[[g]], # sample.mean
-          lavsamplestats@cov[[g]], # sample.cov
-          lavsamplestats@nobs[[g]], # sample.nobs
-          lavsamplestats@mean[[g]], # Mu
-          lavsamplestats@cov[[g]], # Sigma
-          lavsamplestats@x.idx[[g]], # x.idx
-          lavsamplestats@mean.x[[g]], # x.mean
-          lavsamplestats@cov.x[[g]] # x.cov
+        lavaan___lav_mvn_loglik_samp(
+          sample_mean = lavsamplestats@mean[[g]],
+          sample_cov = lavsamplestats@cov[[g]],
+          sample_nobs = lavsamplestats@nobs[[g]],
+          mu = lavsamplestats@mean[[g]],
+          sigma_1 = lavsamplestats@cov[[g]],
+          x_idx = lavsamplestats@x.idx[[g]],
+          x_mean = lavsamplestats@mean.x[[g]],
+          x_cov = lavsamplestats@cov.x[[g]]
         )
     }
   }
   logl_sat
+  # nocov end
 }
 
 # Per-sample deviance chi-square:  chisq_s = 2 * (loglik_sat - loglik(x_s))
 # This equals N * F_ML(x_s).
 compute_chisq_dev <- function(
+  object,
   x_samp,
   lavmodel,
   lavsamplestats,
@@ -51,7 +56,7 @@ compute_chisq_dev <- function(
   lavoptions,
   lavcache
 ) {
-  loglik_sat <- compute_loglik_sat(lavsamplestats, lavdata)
+  loglik_sat <- compute_loglik_sat(object, lavsamplestats, lavdata)
   vapply(
     seq_len(nrow(x_samp)),
     function(i) {
@@ -67,21 +72,6 @@ compute_chisq_dev <- function(
     },
     numeric(1)
   )
-}
-
-# Number of sample statistics:  sum_g [ p_g(p_g+1)/2 + meanstructure * p_g ]
-compute_p_samplestats <- function(nvar, meanstructure) {
-  sum(vapply(
-    nvar,
-    function(nv) {
-      nMom <- nv * (nv + 1) / 2
-      if (isTRUE(meanstructure)) {
-        nMom <- nMom + nv # nocov
-      }
-      nMom
-    },
-    numeric(1)
-  ))
 }
 
 # Absolute fit indices (vectorised over posterior samples) ---------------------
@@ -100,7 +90,11 @@ compute_BMc <- function(nonc, N) exp(-0.5 * nonc / N)
 compute_BCFI <- function(nonc, nonc_null) 1 - nonc / nonc_null
 compute_BTLI <- function(adj_dev, df, adj_dev_null, df_null) {
   tli_null <- adj_dev_null / df_null
-  (tli_null - adj_dev / df) / (tli_null - 1)
+  denom <- tli_null - 1
+  out <- (tli_null - adj_dev / df) / denom
+  # A baseline whose own ratio is 1 leaves nothing to scale by
+  out[abs(denom) < 1e-8] <- NA_real_
+  out
 }
 compute_BNFI <- function(adj_dev, adj_dev_null) {
   (adj_dev_null - adj_dev) / adj_dev_null
@@ -135,6 +129,7 @@ compute_rescaled_quantities <- function(
   npar <- object@Fit@npar
 
   chisq_dev <- compute_chisq_dev(
+    object,
     x_samp,
     lavmodel,
     lavsamplestats,
@@ -172,6 +167,98 @@ compute_rescaled_quantities <- function(
 }
 
 # ---------------------------------------------------------------------------
+# Independence baseline for the incremental indices
+# ---------------------------------------------------------------------------
+
+# Keys of the free parameters of a parameter table, for structural equality
+free_param_keys <- function(pt) {
+  i <- pt$free > 0
+  grp <- pt$group %||% rep(1L, length(pt$lhs))
+  lvl <- pt$level %||% rep(1L, length(pt$lhs))
+  sort(paste(pt$lhs[i], pt$op[i], pt$rhs[i], grp[i], lvl[i]))
+}
+
+# TRUE when every free parameter is a variance or an intercept, which is
+# what the independence model consists of
+is_independence_partable <- function(pt) {
+  i <- pt$free > 0
+  all((pt$op[i] == "~~" & pt$lhs[i] == pt$rhs[i]) | pt$op[i] == "~1")
+}
+
+# Fit the independence (null) model that the incremental indices BCFI, BTLI
+# and BNFI are scaled against, on the same data and likelihood options as
+# `object`. lavaan writes that model's parameter table, and the fitted
+# object's data and sample-statistics slots are reused directly, so no data
+# frame is re-read. The indices need only this model's posterior draws and
+# its pD, so the marginals are Gaussian and the VB shift is skipped, which
+# makes the fit take a fraction of a second even for many items.
+fit_independence_baseline <- function(object, nsamp = NULL) {
+  int <- object@external$inlavaan_internal
+  pt0 <- lavaan::lav_partable_independence(object)
+  opt <- object@Options
+  inlavaan(
+    model = pt0,
+    data = NULL,
+    slotData = object@Data,
+    slotSampleStats = object@SampleStats,
+    missing = opt$missing %||% "default",
+    meanstructure = opt$meanstructure %||% "default",
+    fixed.x = opt$fixed.x %||% "default",
+    conditional.x = opt$conditional.x %||% "default",
+    likelihood = opt$likelihood %||% "default",
+    estimator = int$lavmodel@estimator,
+    marginal_method = "marggaus",
+    vb_correction = FALSE,
+    test = "dic",
+    nsamp = nsamp %||% int$nsamp %||% 1000L,
+    verbose = FALSE
+  )
+}
+
+# Resolve the `baseline.model` argument of bfit_indices(): NULL fits the
+# independence model (none for a model that already is one), FALSE skips
+# the incremental indices, and a supplied fit is checked and used.
+resolve_baseline_model <- function(object, baseline.model, nsamp = NULL) {
+  if (isFALSE(baseline.model)) {
+    return(NULL)
+  }
+  if (is.null(baseline.model)) {
+    if (is_independence_partable(object@ParTable)) {
+      return(NULL)
+    }
+    return(tryCatch(
+      fit_independence_baseline(object, nsamp),
+      error = function(e) {
+        cli_warn(c(
+          "Could not fit the independence baseline, so BCFI, BTLI and BNFI
+           are not reported.",
+          "x" = conditionMessage(e)
+        ))
+        NULL
+      }
+    ))
+  }
+  if (!is(baseline.model, "INLAvaan")) {
+    cli_abort(
+      "{.arg baseline.model} must be an {.cls INLAvaan} object, or
+       {.code FALSE} to skip the incremental indices."
+    )
+  }
+  if (
+    identical(
+      free_param_keys(object@ParTable),
+      free_param_keys(baseline.model@ParTable)
+    )
+  ) {
+    cli_warn(
+      "{.arg baseline.model} has the same free parameters as {.arg object},
+       so BCFI, BTLI and BNFI are zero by construction."
+    )
+  }
+  baseline.model
+}
+
+# ---------------------------------------------------------------------------
 # bfit_indices: compute per-sample Bayesian fit index vectors and return
 # an S3 object of class "bfit_indices" with a summary() and print() method.
 # ---------------------------------------------------------------------------
@@ -182,9 +269,14 @@ compute_rescaled_quantities <- function(
 #' model, analogous to [blavaan::blavFitIndices()].
 #'
 #' @param object An object of class [INLAvaan].
-#' @param baseline.model An optional [INLAvaan] object representing the
-#'   baseline (null) model. Required for incremental fit indices (BCFI, BTLI,
-#'   BNFI).
+#' @param baseline.model The baseline (null) model that the incremental fit
+#'   indices (BCFI, BTLI, BNFI) are scaled against. `NULL` (default) fits the
+#'   independence model on the same data and options automatically, as
+#'   lavaan does: every observed variable keeps its variance (and intercept)
+#'   and nothing correlates. That fit uses Gaussian marginals and no VB
+#'   shift, since only its posterior draws and pD are needed, and takes a
+#'   fraction of a second. Supply an [INLAvaan] object to use another
+#'   baseline, or `FALSE` to skip the incremental indices.
 #' @param rescale Character string controlling how the Bayesian chi-square
 #'   is rescaled. `"devM"` (default) subtracts pD from the deviance at each
 #'   sample. `"MCMC"` uses the classical chi-square and classical df at each
@@ -263,9 +355,11 @@ bfit_indices <- function(
     # nocov
     cli_abort("Bayesian fit indices are only supported for the ML estimator.")
   }
-  if (rescale == "devM" && is.null(int$DIC)) {
+  if (rescale == "devM" && !has_test(int, "dic")) {
     cli_abort(
-      "DIC not available. Refit with {.code test != \"none\"}, or use {.code rescale = \"MCMC\"}."
+      "DIC not available. Refit with {.arg test} including {.val dic}
+       (part of the default {.val standard}), or use
+       {.code rescale = \"MCMC\"}."
     )
   }
 
@@ -274,8 +368,10 @@ bfit_indices <- function(
   N <- lavsamplestats@ntotal
   Ngr <- lavdata@ngroups
   nvar <- lavmodel@nvar
-  ms <- isTRUE(lavoptions$meanstructure)
-  p <- compute_p_samplestats(nvar, ms)
+  # Number of sample moments, counted as lavaan counts them for the model's
+  # degrees of freedom: per group and level, without the moments of fixed
+  # exogenous covariates
+  p <- lavaan::lav_partable_ndat(object@ParTable)
 
   rq <- compute_rescaled_quantities(
     object,
@@ -299,11 +395,10 @@ bfit_indices <- function(
     indices$BMc <- compute_BMc(rq$nonc, rq$N_adj)
   } # else: df == 0, no absolute fit indices (nocov – saturated model)
 
-  # Incremental indices
+  # Incremental indices, scaled against the independence model unless the
+  # caller supplies a baseline or asks to skip them
+  baseline.model <- resolve_baseline_model(object, baseline.model, nsamp)
   if (!is.null(baseline.model)) {
-    if (!is(baseline.model, "INLAvaan")) {
-      cli_abort("{.arg baseline.model} must be an {.cls INLAvaan} object.")
-    }
     bint <- baseline.model@external$inlavaan_internal
 
     bmethod <- if (isTRUE(samp_copula)) bint$marginal_method else "sampling"
@@ -428,16 +523,34 @@ inlav_fit_measures <- function(
   out["npar"] <- object@Fit@npar
   out["margloglik"] <- object@external$inlavaan_internal$mloglik
 
-  # If test != "none"
-  if (length(object@Fit@test$ppp) > 0) {
-    out["ppp"] <- object@external$inlavaan_internal$ppp
-    out["dic"] <- object@external$inlavaan_internal$DIC$dic
-    out["p_dic"] <- object@external$inlavaan_internal$DIC$pD
+  int <- object@external$inlavaan_internal
+  if (has_test(int, "ppp")) {
+    out["ppp"] <- int$ppp
+  }
+  if (has_test(int, "dic")) {
+    out["dic"] <- int$DIC$dic
+    out["p_dic"] <- int$DIC$pD
   }
 
   # Validate baseline.model early (before tryCatch)
-  if (!is.null(baseline.model) && !is(baseline.model, "INLAvaan")) {
-    cli_abort("{.arg baseline.model} must be an {.cls INLAvaan} object.")
+  if (
+    !is.null(baseline.model) &&
+      !isFALSE(baseline.model) &&
+      !is(baseline.model, "INLAvaan")
+  ) {
+    cli_abort(
+      "{.arg baseline.model} must be an {.cls INLAvaan} object, or
+       {.code FALSE} to skip the incremental indices."
+    )
+  }
+
+  # The independence baseline is fitted only when an incremental index is
+  # actually wanted, so a request for absolute indices alone stays free
+  incr_measures <- c("BCFI", "BTLI", "BNFI")
+  need_incr <- identical(fit.measures, "all") ||
+    any(incr_measures %in% fit.measures)
+  if (is.null(baseline.model) && !need_incr) {
+    baseline.model <- FALSE
   }
 
   # Bayesian fit indices (BRMSEA, BGammaHat, etc.)
@@ -451,8 +564,9 @@ inlav_fit_measures <- function(
     }
   }
 
-  # LOO measures: free when stored with the fit (test = "loo" or add_loo());
-  # otherwise computed on demand, and only when requested by name -- the LOO
+  # LOO measures: free when stored with the fit (test = "loo"/"waic"/"full",
+  # or add_loo()); otherwise computed on demand, and only when requested by
+  # name -- the LOO
   # computation is fresh work and cannot be cached into `object` (S4 copy
   # semantics), so it never silently inflates a bare fitMeasures() call
   loo_measures <- c("elpd_loo", "se_loo", "p_loo", "looic")
@@ -469,10 +583,23 @@ inlav_fit_measures <- function(
     out["p_loo"] <- res_loo$estimates["p_loo", "Estimate"]
     out["looic"] <- res_loo$estimates["looic", "Estimate"]
     out["se_loo"] <- res_loo$estimates["looic", "SE"]
+    # The order used is a property of the numbers, not of when they were
+    # computed. A stored LOO warned at fit time, so without this a reloaded
+    # fit would hand back first-order measures without a word.
+    n_loo <- res_loo$n_units
+    if (isTRUE(res_loo$second_order) && res_loo$n_ok < n_loo) {
+      n_bad <- n_loo - res_loo$n_ok
+      cli_warn(c(
+        "{n_bad} of {n_loo} units {qty(n_bad)}{?has/have} no second-order
+         term ({.field k_max} at or above 1).",
+        "i" = "{.field elpd_loo}, {.field p_loo} and {.field looic} are
+               reported at first order. See {.fun loo}."
+      ))
+    }
   }
 
-  # WAIC: free when stored with the fit; otherwise sampling-based, computed
-  # on demand when requested by name
+  # WAIC: free when stored with the fit; otherwise computed on demand (a
+  # full Taylor pass) when requested by name
   waic_measures <- c("elpd_waic", "se_waic", "p_waic", "waic")
   res_waic <- object@external$inlavaan_internal$waic
   if (
@@ -539,16 +666,19 @@ print.fitmeasures.inlavaan_internal <- function(x, ...) {
 #' @param fit_measures If `"all"`, all fit measures available will be returned. If
 #'   only a single or a few fit measures are specified by name, only those are
 #'   computed and returned. The LOO measures `"elpd_loo"`, `"se_loo"`,
-#'   `"p_loo"` and `"looic"` (see [loo()]) are included in `"all"` only when
-#'   a LOO result is stored with the fit (`test = "loo"` in [inlavaan()] or
-#'   [add_loo()]); otherwise they are computed on demand when requested by
-#'   name, and recomputed on every call -- store the result with
-#'   `fit <- add_loo(fit)` (or call [loo()] directly) for repeated access.
-#'   INLAvaan's stable spelling `fit.measures` is also accepted.
-#' @param baseline_model An optional [INLAvaan] object representing the
-#'   baseline (null) model. Required for incremental fit indices (BCFI, BTLI,
-#'   BNFI). Must have been fitted with `test != "none"`. INLAvaan's stable
-#'   spelling `baseline.model` is also accepted.
+#'   `"p_loo"` and `"looic"` (see [loo()]), and the WAIC measures
+#'   `"elpd_waic"`, `"se_waic"`, `"p_waic"` and `"waic"` (see [waic()]), are
+#'   included in `"all"` only when stored with the fit (`test` including
+#'   `"loo"`, `"waic"` or `"full"` in [inlavaan()], or [add_loo()]);
+#'   otherwise they are computed on demand when requested by name, and
+#'   recomputed on every call -- store the result with `fit <- add_loo(fit)`
+#'   (or call [loo()]/[waic()] directly) for repeated access. INLAvaan's
+#'   stable spelling `fit.measures` is also accepted.
+#' @param baseline_model The baseline (null) model for the incremental fit
+#'   indices (BCFI, BTLI, BNFI). `NULL` (default) fits the independence model
+#'   automatically, as lavaan does. Supply an [INLAvaan] object to use
+#'   another baseline, or `FALSE` to skip the incremental indices. INLAvaan's
+#'   stable spelling `baseline.model` is also accepted; see [bfit_indices()].
 #' @param h1_model Ignored (included for compatibility with the lavaan
 #'   generic).
 #' @param fm_args Ignored (included for compatibility with the lavaan
@@ -585,7 +715,7 @@ print.fitmeasures.inlavaan_internal <- function(x, ...) {
 #' fitMeasures(fit)
 #'
 #' # Specific measures
-#' fitMeasures(fit, c("npar", "DIC", "pD", "ppp"))
+#' fitMeasures(fit, c("npar", "dic", "p_dic", "ppp"))
 #' }
 #'
 #' @usage
@@ -611,63 +741,54 @@ NULL
 #' @rawNamespace exportMethods(fitmeasures)
 NULL
 
-# lavaan >= 0.7 renamed the fitMeasures()/fitmeasures() generics' arguments
-# (fit.measures/baseline.model -> fit_measures/baseline_model). Unlike a
-# plain rename, registering setMethod() against the WRONG argument names
-# doesn't just fail loudly: S4 dispatch silently drops any value bound to a
-# generic-level formal the method doesn't also declare (verified empirically
-# -- positional and named calls both default silently), and if the method
-# was compiled against a lavaan present at a *different* time than the one
-# later loaded, dispatch can also error outright ("could not find symbol").
-# So -- like the lavaan___-prefixed internals in lavaan-unexported.R -- these
-# methods must be (re)built from whichever lavaan generic is actually active
-# in the current session, in .onLoad(), not baked in at build/install time.
-# The resolved installed spellings come from the shared lavaan_argnames map
-# (see lavaan-argnames.R, resolved earlier in the same .onLoad()), the one
-# mechanism INLAvaan uses for every renamed lavaan argument.
+# With lavaan >= 0.7 required, the generics' argument spellings are fixed
+# (fit_measures, baseline_model), so the methods can be registered the
+# ordinary way at build time; the load-time re-registration this replaced
+# existed only to serve both lavaan generations at once.
 #
-# INLAvaan's own documented/stable parameter names are fit.measures and
-# baseline.model (used internally, e.g. by compare()), regardless of which
-# lavaan is loaded. Under lavaan >= 0.7 those don't match the active
-# generic's own (renamed) formals, so a caller using our documented names
-# falls through into "..." unmatched rather than being dropped; recover it
-# from there instead of re-forwarding "..." verbatim (which would otherwise
-# also duplicate whatever the generic's own formal already bound).
-register_fitmeasures_methods <- function(ns) {
-  fm_map <- lavaan_argnames[["fitMeasures"]]
-  fit_measures_arg <- fm_map[["fit.measures"]]
-  baseline_model_arg <- fm_map[["baseline.model"]]
-
-  for (generic_name in c("fitMeasures", "fitmeasures")) {
-    gf <- formals(methods::getGeneric(generic_name))
-
-    method_fn <- function(object, ...) NULL
-    formals(method_fn) <- gf
-    body(method_fn) <- bquote({
-      dots <- list(...)
-      fit.measures <- .(as.name(fit_measures_arg))
-      baseline.model <- .(as.name(baseline_model_arg))
-      if ("fit.measures" %in% names(dots)) {
-        fit.measures <- dots[["fit.measures"]]
-        dots[["fit.measures"]] <- NULL
-      }
-      if ("baseline.model" %in% names(dots)) {
-        baseline.model <- dots[["baseline.model"]]
-        dots[["baseline.model"]] <- NULL
-      }
-      do.call(
-        inlav_fit_measures,
-        c(
-          list(
-            object,
-            fit.measures = fit.measures,
-            baseline.model = baseline.model
-          ),
-          dots
-        )
-      )
-    })
-    environment(method_fn) <- ns
-    methods::setMethod(generic_name, "INLAvaan", method_fn, where = ns)
+# INLAvaan's own documented/stable parameter names remain fit.measures and
+# baseline.model (used internally, e.g. by compare()). Those don't match the
+# generic's formals, so a caller using them falls through into "..."
+# unmatched rather than being silently dropped; recover them from there.
+inlav_fitmeasures_method <- function(
+  object,
+  fit_measures = "all",
+  baseline_model = NULL,
+  h1_model = NULL,
+  fm_args = list(
+    standard.test = "default",
+    scaled.test = "default",
+    rmsea.ci.level = 0.90,
+    rmsea.close.h0 = 0.05,
+    rmsea.notclose.h0 = 0.08,
+    robust = TRUE,
+    cat.nonpd = "na"
+  ),
+  output = "vector",
+  level = NULL,
+  ...
+) {
+  dots <- list(...)
+  if ("fit.measures" %in% names(dots)) {
+    fit_measures <- dots[["fit.measures"]]
+    dots[["fit.measures"]] <- NULL
   }
+  if ("baseline.model" %in% names(dots)) {
+    baseline_model <- dots[["baseline.model"]]
+    dots[["baseline.model"]] <- NULL
+  }
+  do.call(
+    inlav_fit_measures,
+    c(
+      list(
+        object,
+        fit.measures = fit_measures,
+        baseline.model = baseline_model
+      ),
+      dots
+    )
+  )
 }
+
+setMethod("fitMeasures", "INLAvaan", inlav_fitmeasures_method)
+setMethod("fitmeasures", "INLAvaan", inlav_fitmeasures_method)

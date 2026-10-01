@@ -1,3 +1,7 @@
+# Extended LOO suite pinned to reference values. It runs in CI, and
+# test-loo-loso.R covers the core LOO on CRAN.
+skip_on_cran()
+
 twolevel_model <- "
   level: 1
     fw =~ y1 + y2 + y3
@@ -76,7 +80,38 @@ test_that("LOCO structure and internal identities", {
     res$per_unit$lpd_1 + res$per_unit$log_cpo_1,
     2 * res$per_unit$l_star
   )
-  expect_output(print(res), "leave-one-cluster-out")
+  expect_output(print(res), "Leave-one-cluster-out")
+})
+
+test_that("the curvature check is reported and printed", {
+  # The check compares the summed first-to-second-order gap against pD/2, both
+  # read off the same Laplace summary
+  expect_equal(res$pd_trace, sum(res$per_unit$k_sum))
+  expect_equal(res$elpd_gap, res$elpd_1 - res$elpd_2)
+
+  # Pin the width so the cli rules and the reflowed note render the same way
+  # whatever console the tests run on
+  old_opt <- options(cli.width = 100)
+  on.exit(options(old_opt), add = TRUE)
+
+  expect_output(print(res), "Curvature check")
+  expect_output(print(res), "pD/2 \\(trace\\)")
+  expect_output(print(res), "excess over pD/2")
+  # summary() is an alias for print(), not a different view
+  expect_identical(capture.output(print(res)), capture.output(summary(res)))
+
+  # At first order there is no second-order score to take a gap against, so
+  # both scalars are NA and the block is skipped entirely
+  res_fo <- loo(fit, second_order = FALSE)
+  expect_true(is.na(res_fo$pd_trace))
+  expect_true(is.na(res_fo$elpd_gap))
+  expect_false(any(grepl("Curvature check", capture.output(print(res_fo)))))
+
+  # A units subset sums both sides over the same units, so the check still
+  # holds while the totals are partial
+  res_sub <- loo(fit, units = 1:2)
+  expect_equal(res_sub$pd_trace, sum(res_sub$per_unit$k_sum))
+  expect_lt(res_sub$pd_trace, res$pd_trace)
 
   # Sum of cluster logliks equals the model loglik at the mode
   int <- get_inlavaan_internal(fit)
@@ -84,7 +119,7 @@ test_that("LOCO structure and internal identities", {
   lm_x <- lavaan::lav_model_set_parameters(int$lavmodel, x)
   opts <- fit@Options
   opts$estimator <- "ML"
-  ll <- INLAvaan:::lavaan___lav_model_loglik(
+  ll <- lavaan:::lav_model_loglik(
     lavdata = int$lavdata,
     lavsamplestats = int$lavsamplestats,
     lavimplied = lavaan::lav_model_implied(lm_x),
@@ -94,7 +129,80 @@ test_that("LOCO structure and internal identities", {
   expect_equal(sum(res$per_unit$l_star), ll, tolerance = 1e-6)
 })
 
-test_that("LOCO unit subsetting and theta/Sigma override", {
+test_that("curvature diagnostics satisfy their defining identities", {
+  pu <- res$per_unit
+  # k_u = lambda_max(-Omega H_u) >= 0 when the unit curvature is n.s.d.
+  expect_true(all(pu$k_max >= 0))
+  # Finite mean of the importance ratio <=> A_u positive definite <=> ok
+  expect_identical(pu$ok, pu$k_max < 1)
+  # det_term = 1/2 sum_i log(1 - k_i) <= 1/2 log(1 - k_max), so k_max is
+  # bounded by the determinant term alone
+  expect_true(all(pu$k_max <= 1 - exp(2 * pu$det_term) + 1e-10))
+  # Trace dominates the largest eigenvalue
+  expect_true(all(pu$k_sum >= pu$k_max - 1e-10))
+  # First-order scoring computes no curvature, so both are NA
+  res1 <- loo(fit, second_order = FALSE)
+  expect_true(all(is.na(res1$per_unit$k_max)))
+  expect_true(all(is.na(res1$per_unit$k_sum)))
+})
+
+test_that("a missing second-order term takes the whole statistic to first order", {
+  S <- get_inlavaan_internal(fit)$Sigma_theta
+  # Inflating Omega scales every k_u linearly, driving A_u = Omega^-1 + H_u
+  # toward the negative-definite H_u, so units lose their second-order term
+  # deterministically rather than by a lucky data seed.
+
+  # Nothing fails here: the second-order total is the plain sum, no warning.
+  expect_equal(res$n_ok, res$n_units)
+  expect_true(res$use_second)
+  expect_equal(res$elpd_2, sum(res$per_unit$log_cpo_2))
+  expect_no_warning(loo(fit, cores = 1L))
+
+  # Every unit fails: there is no second-order total to report at all.
+  r_all <- suppressWarnings(loo(fit, Omega = S * 1e6, cores = 1L))
+  expect_equal(r_all$n_ok, 0L)
+  expect_true(all(is.na(r_all$per_unit$log_cpo_2)))
+  expect_true(is.na(r_all$elpd_2))
+  expect_false(r_all$use_second)
+  expect_equal(unname(r_all$estimates["elpd_loo", "Estimate"]), r_all$elpd_1)
+
+  # Some units fail, and that is enough: elpd_loo is the first-order total
+  # over all n units. It is neither a blend of the two orders nor the
+  # second-order sum over the surviving units, which would score the model
+  # over fewer units and so flatter it.
+  r_mix <- suppressWarnings(loo(fit, Omega = S * 4, cores = 1L))
+  pu <- r_mix$per_unit
+  expect_true(any(is.na(pu$log_cpo_2)))
+  expect_false(all(is.na(pu$log_cpo_2)))
+  expect_true(is.na(r_mix$elpd_2))
+  expect_equal(unname(r_mix$estimates["elpd_loo", "Estimate"]), r_mix$elpd_1)
+  blended <- ifelse(is.na(pu$log_cpo_2), pu$log_cpo_1, pu$log_cpo_2)
+  expect_false(isTRUE(all.equal(r_mix$elpd_1, sum(blended))))
+  expect_false(isTRUE(all.equal(r_mix$elpd_1, sum(pu$log_cpo_2, na.rm = TRUE))))
+
+  # The pointwise column records the same failures the aggregates react to.
+  expect_true(all(is.na(pu$log_cpo_2) == !pu$ok))
+
+  # A missing log CPO term warns; it is the condition that says leave-one-out
+  # is not identified for that unit
+  msg <- tryCatch(
+    loo(fit, Omega = S * 4, cores = 1L),
+    warning = conditionMessage
+  )
+  expect_match(msg, "no second-order term")
+  # ... and it names them, since Omega^-1 + H_u is the deleted posterior
+  # precision, so the finding is about the unit and the user's next move is
+  # to go and look at it
+  bad <- pu$unit[!pu$ok]
+  expect_true(all(vapply(
+    bad,
+    function(u) grepl(paste0("\\b", u, "\\b"), msg),
+    logical(1)
+  )))
+  expect_match(msg, "per_unit", fixed = TRUE)
+})
+
+test_that("LOCO unit subsetting and theta/Omega override", {
   sub <- c(3L, 7L, 11L)
   res_sub <- loo(fit, units = sub)
   expect_equal(res_sub$per_unit$unit, sub)
@@ -108,7 +216,7 @@ test_that("LOCO unit subsetting and theta/Sigma override", {
   res_same <- loo(
     fit,
     theta = int$theta_star,
-    Sigma = int$Sigma_theta,
+    Omega = int$Sigma_theta,
     units = sub
   )
   expect_true(res_same$theta_overridden)
@@ -217,14 +325,14 @@ test_that("fixed.x two-level fits are scored conditionally", {
 
 test_that("waic gains type: conditional (leave-one-unit-out) WAIC", {
   # default is marginal (per-cluster) WAIC
-  set.seed(1)
-  w_marg <- suppressWarnings(waic(fit, nsamp = 120))
+  w_marg <- suppressWarnings(waic(fit))
   expect_equal(w_marg$type, "loco")
 
-  # type = "loso" warns and scores the conditional (leave-one-unit-out) WAIC,
-  # the same estimand as loo(type = "loso"); the two routes agree loosely
+  # type = "loso" warns and scores the conditional (leave-one-unit-out)
+  # WAIC, the same estimand as loo(type = "loso"): identical lpd terms, so
+  # the two differ only by the p_waic vs p_loo penalty gap
   w_cond <- testthat::capture_warnings(
-    w <- waic(fit, type = "loso", units = 1:5, nsamp = 120)
+    w <- waic(fit, type = "loso", units = 1:5)
   )
   expect_true(any(grepl("leave-one-unit-out", w_cond)))
   expect_equal(w$type, "loso")

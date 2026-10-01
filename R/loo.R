@@ -74,7 +74,7 @@ loo_grad_cache <- function(theta, lavmodel, pt, two_level = FALSE) {
   list(
     x = x,
     mom = loo_implied_moments(lavmodel_x, two_level),
-    Delta = lavaan___lav_model_delta(lavmodel_x, lavmodel_x@GLIST),
+    Delta = lavaan___lav_model_delta(lavmodel_x, glist = lavmodel_x@GLIST),
     jcb_vec = as.numeric(mapply(
       function(f, th) f(th),
       pt$ginv_prime[pt$free > 0],
@@ -251,7 +251,12 @@ loso_loglik_all <- function(Y, mom) {
 mvn_scores_rows <- function(Y, mu, Sigma) {
   n <- nrow(Y)
   Yc <- if (n == 1L) rbind(Y, Y) else Y
-  sc <- lavaan___lav_mvnorm_scores_mu_vech_sigma(Yc, NULL, mu, Sigma)
+  sc <- lavaan___lav_mvn_sc_mu_sigma(
+    y = Yc,
+    wt = NULL,
+    mu = mu,
+    sigma_1 = Sigma
+  )
   if (n == 1L) sc[1L, , drop = FALSE] else sc
 }
 
@@ -406,16 +411,16 @@ loco_unit_stats <- function(j, css) {
 }
 
 loco_loglik_us <- function(us, mom) {
-  as.numeric(lavaan___lav_mvnorm_cluster_loglik_samplestats_2l(
-    us$YLp,
-    us$Lp,
-    mom$mu_w,
-    mom$Sigma_w,
-    mom$mu_b,
-    mom$Sigma_b,
-    "eigen",
-    TRUE, # log2pi
-    FALSE # minus.two
+  as.numeric(lavaan___lav_mvn_cl_loglik_samp_2l(
+    ylp = us$YLp,
+    lp = us$Lp,
+    mu_w = mom$mu_w,
+    sigma_w = mom$Sigma_w,
+    mu_b = mom$mu_b,
+    sigma_b = mom$Sigma_b,
+    sinv_method = "eigen",
+    log2pi = TRUE,
+    minus_two = FALSE
   ))
 }
 
@@ -424,13 +429,13 @@ loco_loglik_one <- function(j, css, mom) {
 }
 
 loco_grad_x_us <- function(us, mom, Delta) {
-  DX <- lavaan___lav_mvnorm_cluster_dlogl_2l_samplestats(
-    us$YLp,
-    us$Lp,
-    mom$mu_w,
-    mom$Sigma_w,
-    mom$mu_b,
-    mom$Sigma_b
+  DX <- lavaan___lav_mvn_cl_dlogl_2l_samp(
+    ylp = us$YLp,
+    lp = us$Lp,
+    mu_w = mom$mu_w,
+    sigma_w = mom$Sigma_w,
+    mu_b = mom$mu_b,
+    sigma_b = mom$Sigma_b
   )
   # dlogl is the derivative of -2 * loglik w.r.t. the stacked moments
   -0.5 * as.numeric(DX %*% Delta[[1L]])
@@ -502,7 +507,12 @@ loco_missing_build_cj <- function(Y1j, Y2j, Lp, between_idx) {
   } else {
     Y1j
   }
-  Mpj <- lavaan___lav_data_missing_patterns(Ywj, FALSE, FALSE, Lpj)
+  Mpj <- lavaan___lav_data_mi_patterns(
+    y = Ywj,
+    sort_freq = FALSE,
+    coverage = FALSE,
+    lp = Lpj
+  )
   list(Y1 = Y1j, Y2 = Y2j, Lp = Lpj, Mp = Mpj)
 }
 
@@ -553,19 +563,19 @@ loco_missing_info <- function(int) {
 }
 
 loco_missing_loglik_cj <- function(cj, mom) {
-  as.numeric(lavaan___lav_mvnorm_cluster_missing_loglik_samplestats_2l(
-    cj$Y1,
-    cj$Y2,
-    cj$Lp,
-    cj$Mp,
-    mom$mu_w,
-    mom$Sigma_w,
-    mom$mu_b,
-    mom$Sigma_b,
-    "eigen", # Sinv.method
-    TRUE, # log2pi
-    0, # loglik.x
-    FALSE # minus.two
+  as.numeric(lavaan___lav_mvn_cl_mi_loglik_samp_2l(
+    y1 = cj$Y1,
+    y2 = cj$Y2,
+    lp = cj$Lp,
+    mp = cj$Mp,
+    mu_w = mom$mu_w,
+    sigma_w = mom$Sigma_w,
+    mu_b = mom$mu_b,
+    sigma_b = mom$Sigma_b,
+    sinv_method = "eigen",
+    log2pi = TRUE,
+    loglik_x = 0,
+    minus_two = FALSE
   ))
 }
 
@@ -574,15 +584,15 @@ loco_missing_loglik_one <- function(j, minfo, mom) {
 }
 
 loco_missing_grad_cj <- function(cj, mom, Delta) {
-  DX <- lavaan___lav_mvnorm_cluster_missing_dlogl_2l_samplestats(
-    cj$Y1,
-    cj$Y2,
-    cj$Lp,
-    cj$Mp,
-    mom$mu_w,
-    mom$Sigma_w,
-    mom$mu_b,
-    mom$Sigma_b
+  DX <- lavaan___lav_mvn_cl_mi_dlogl_2l_samp(
+    y1 = cj$Y1,
+    y2 = cj$Y2,
+    lp = cj$Lp,
+    mp = cj$Mp,
+    mu_w = mom$mu_w,
+    sigma_w = mom$Sigma_w,
+    mu_b = mom$mu_b,
+    sigma_b = mom$Sigma_b
   )
   # dlogl is the derivative of -2 * loglik w.r.t. the stacked moments
   -0.5 * as.numeric(DX %*% Delta[[1L]])
@@ -835,6 +845,7 @@ taylor_loo_unit <- function(
   H_u,
   S_act,
   S_inv,
+  R_act = NULL,
   second_order = TRUE
 ) {
   d <- length(s_u)
@@ -845,9 +856,34 @@ taylor_loo_unit <- function(
     log_cpo_2 = NA_real_,
     lpd_2 = NA_real_,
     det_term = NA_real_,
+    k_max = NA_real_,
+    k_min = NA_real_,
+    k_sum = NA_real_,
+    k_ssq = NA_real_,
     ok = FALSE
   )
   if (second_order && !is.null(H_u)) {
+    # Curvature diagnostics: eigenvalues of -Sigma* H_u, obtained from the
+    # symmetric similarity R (-H_u) R' so the spectrum is real. k_max is the
+    # share of the posterior precision the unit carries along its worst
+    # direction, and k_max < 1 is the existence condition for the unit's
+    # second-order log CPO; k_min > -1 is the condition for its second-order
+    # lpd, reading the opposite end of the same spectrum; k_sum =
+    # tr(Sigma*(-H_u)) is its total leverage, and k_ssq = tr[(Sigma* H_u)^2]
+    # feeds the closed-form p_waic (see waic_from_taylor).
+    if (!is.null(R_act)) {
+      ev <- eigen(
+        -R_act %*% H_u %*% t(R_act),
+        symmetric = TRUE,
+        only.values = TRUE
+      )$values
+      out$k_max <- max(ev[1L], 0)
+      # not clamped, unlike k_max: the informative values are the negative
+      # ones, and k_min <= -1 is exactly where the lpd integral fails
+      out$k_min <- ev[length(ev)]
+      out$k_sum <- sum(ev)
+      out$k_ssq <- sum(ev^2)
+    }
     A_u <- S_inv + H_u
     Ac <- tryCatch(chol(A_u), error = function(e) NULL)
     if (!is.null(Ac)) {
@@ -872,6 +908,13 @@ taylor_loo_unit <- function(
     }
   }
   out
+}
+
+# Pointwise log CPO behind the headline ELPD, at whichever order that ELPD was
+# reported at. compare() pairs it across models so that the reported elpd_diff
+# and its se_diff rest on the same per-unit contributions.
+loo_headline_pointwise <- function(per_unit, use_second) {
+  if (isTRUE(use_second)) per_unit$log_cpo_2 else per_unit$log_cpo_1
 }
 
 # Insert a group column (labels when available) after `unit` for multigroup
@@ -899,14 +942,6 @@ resolve_loo_cores <- function(cores) {
   if (is.na(cores) || cores < 1L) {
     cores <- 1L
   }
-  if (cores > 1L && .Platform$OS.type == "windows") {
-    # nocov start
-    cli_alert_warning(
-      "Parallel LOO uses forking, which is not available on Windows.
-       Continuing serially."
-    )
-    cores <- 1L
-  } # nocov end
   cores
 }
 
@@ -1160,7 +1195,8 @@ inlav_loo <- function(
   # those dimensions) and is a no-op for an unconditioned summary.
   free <- which(diag(Sigma) > .Machine$double.eps)
   S_act <- Sigma[free, free, drop = FALSE]
-  S_inv <- chol2inv(chol(S_act))
+  R_act <- chol(S_act) # upper factor, S_act = t(R_act) %*% R_act
+  S_inv <- chol2inv(R_act)
 
   if (isTRUE(verbose)) {
     cli_progress_step(
@@ -1274,9 +1310,11 @@ inlav_loo <- function(
 
   H_arr <- NULL
   if (isTRUE(second_order)) {
-    # Budget gate (used by the fit-time default path): the Hessian stage
-    # costs 2 * m_free score-matrix evaluations, so timing a single
-    # evaluation predicts the total before committing to it
+    # Budget gate (reached only when a caller passes a finite max_seconds;
+    # inlavaan() itself no longer does, since the fit-time LOO now runs
+    # without a budget whenever "loo"/"waic" is requested through `test`):
+    # the Hessian stage costs 2 * m_free score-matrix evaluations, so timing
+    # a single evaluation predicts the total before committing to it
     if (is.finite(max_seconds)) {
       t_one <- as.numeric(system.time(score_fn(theta[free]))["elapsed"])
       # floor at clock resolution so a fast evaluation never predicts zero
@@ -1305,6 +1343,7 @@ inlav_loo <- function(
       if (isTRUE(second_order)) H_arr[,, u] else NULL,
       S_act,
       S_inv,
+      R_act = R_act,
       second_order = second_order
     )
   })
@@ -1319,46 +1358,108 @@ inlav_loo <- function(
     log_cpo_1 = vapply(raw, `[[`, numeric(1), "log_cpo_1"),
     log_cpo_2 = vapply(raw, `[[`, numeric(1), "log_cpo_2"),
     det_term = vapply(raw, `[[`, numeric(1), "det_term"),
+    k_max = vapply(raw, `[[`, numeric(1), "k_max"),
+    k_min = vapply(raw, `[[`, numeric(1), "k_min"),
+    k_sum = vapply(raw, `[[`, numeric(1), "k_sum"),
+    k_ssq = vapply(raw, `[[`, numeric(1), "k_ssq"),
     ok = vapply(raw, `[[`, logical(1), "ok")
   )
   per_unit <- add_loo_group_column(per_unit, unit_group, lavdata)
 
-  # loo-style SE of the total ELPD: sqrt(n * var(pointwise)). n is the number
-  # of units scored, known a priori: a failed second-order term voids only
-  # that unit's term (NA, dropped from the sum/var), not its place in the
-  # sample, so both orders scale by the same n.
+  # loo-style SE of a total: sqrt(n * var(pointwise)), with n the number of
+  # units scored, known a priori. It stays n even where a variance is taken
+  # over fewer terms, so both orders scale by the same n.
   elpd_1 <- sum(per_unit$log_cpo_1)
   se_1 <- sqrt(n_units * var(per_unit$log_cpo_1))
-  p_loo_1 <- sum(per_unit$lpd_1 - per_unit$log_cpo_1)
+  p_diff_1 <- per_unit$lpd_1 - per_unit$log_cpo_1
+  p_loo_1 <- sum(p_diff_1)
+
+  # Two existence conditions on the same H_u. A unit's second-order log CPO
+  # exists iff Sigma^-1 + H_u is positive definite (equivalently k_u < 1), its
+  # second-order lpd iff Sigma^-1 - H_u is; the second condition reads the
+  # opposite end of the spectrum of Sigma H_u and only p_loo needs it.
+  #
+  # The two divergences mean opposite things, so they get opposite remedies.
+  #
+  # E[1/p(y_u|theta)] can genuinely be infinite, so a missing log CPO term
+  # says the unit's true leave-one-out term really is extreme; a first-order
+  # stand-in, which ignores exactly the curvature that made the integral
+  # diverge, would be wrong by an unbounded amount. elpd is also a predictive
+  # score, whose meaning depends on scoring a fixed set of units, so dropping
+  # the unit would score the model over fewer units and flatter it. Hence:
+  # every estimate falls to first order over all units.
+  #
+  # E[p(y_u|theta)] is always finite in truth (a density is bounded), so a
+  # missing lpd term is an artefact of extrapolating the quadratic, not a
+  # feature of the unit: its true contribution is ordinary, and its
+  # first-order contribution recovers roughly 90% of it against a sampled
+  # reference, against 0% for dropping the unit. Hence: substitute.
   n_ok <- sum(per_unit$ok)
-  if (isTRUE(second_order)) {
-    elpd_2 <- sum(per_unit$log_cpo_2, na.rm = TRUE)
-    se_2 <- sqrt(n_units * var(per_unit$log_cpo_2, na.rm = TRUE))
-    p_loo_2 <- sum(per_unit$lpd_2 - per_unit$log_cpo_2, na.rm = TRUE)
-    if (n_ok < ceiling(0.9 * n_units)) {
-      cli_warn(c(
-        "{n_units - n_ok} of {n_units} units fell back to the first-order
-         approximation (non-positive-definite curvature).",
-        "i" = "The Gaussian posterior summary may be a poor fit."
-      ))
-    }
+  has_lpd_2 <- !is.na(per_unit$lpd_2)
+  n_lpd_ok <- sum(has_lpd_2)
+  if (isTRUE(second_order) && n_ok == n_units) {
+    elpd_2 <- sum(per_unit$log_cpo_2)
+    se_2 <- sqrt(n_units * var(per_unit$log_cpo_2))
+    p_diff_2 <- ifelse(
+      has_lpd_2,
+      per_unit$lpd_2 - per_unit$log_cpo_2,
+      p_diff_1
+    )
+    p_loo_2 <- sum(p_diff_2)
   } else {
     elpd_2 <- se_2 <- p_loo_2 <- NA_real_
+    p_diff_2 <- NULL
   }
+  if (isTRUE(second_order) && n_ok < n_units) {
+    n_bad <- n_units - n_ok
+    # Name them. Sigma^-1 + H_u is the *deleted* posterior precision, so this
+    # condition is a statement about the unit rather than about arithmetic,
+    # and the user's next move is to go and look at it.
+    bad_units <- cli_vec(
+      per_unit$unit[!per_unit$ok],
+      style = list("vec-trunc" = 10L)
+    )
+    cli_warn(
+      c(
+        "Reverting to first-order approximation.",
+        "i" = "{n_bad} of {n_units} units {qty(n_bad)}{?has/have} no second-order term: {.val {bad_units}}. ",
+        "i" = "{qty(n_bad)}{?Its/Their} case-deletion integral diverges
+               ({.field k_max} at or above 1): deleting {qty(n_bad)}{?it/them}
+               leaves the remaining data and the prior unable to identify some
+               combination of parameters.",
+        "i" = "This usually says something about the data or the model; see {.code per_unit[!per_unit$ok, ]}."
+      ),
+      class = "inlavaan_loo_first_order"
+    )
+  }
+  # A missing lpd term deliberately says nothing at the console. It is the
+  # ordinary state of an SEM fit, elpd_loo and looic are untouched, and the
+  # substituted first-order contribution lands within ~10% of the true one --
+  # an error several times smaller than the systematic bias the second-order
+  # lpd carries on the units that keep it, which is not flagged either.
+  # Announcing the smaller error while silent on the larger would misdirect,
+  # so this is left to the printed summary and to `n_lpd_ok`.
 
-  use_second <- isTRUE(second_order) && n_ok > 0L
+  # p_loo accompanies elpd at the same order; within second order it is summed
+  # over the units whose lpd term exists
+  use_second <- isTRUE(second_order) && is.finite(elpd_2)
   elpd_loo <- if (use_second) elpd_2 else elpd_1
   se_elpd <- if (use_second) se_2 else se_1
-  p_loo <- if (use_second && is.finite(p_loo_2)) p_loo_2 else p_loo_1
-  p_diff <- per_unit$lpd_1 - per_unit$log_cpo_1
-  if (use_second && is.finite(p_loo_2)) {
-    p_diff <- per_unit$lpd_2 - per_unit$log_cpo_2
-  }
+  p_loo <- if (use_second) p_loo_2 else p_loo_1
+  p_diff <- if (use_second) p_diff_2 else p_diff_1
   estimates <- cbind(
     Estimate = c(elpd_loo, p_loo, -2 * elpd_loo),
-    SE = c(se_elpd, sqrt(n_units * var(p_diff, na.rm = TRUE)), 2 * se_elpd)
+    SE = c(se_elpd, sqrt(n_units * var(p_diff)), 2 * se_elpd)
   )
   rownames(estimates) <- c("elpd_loo", "p_loo", "looic")
+
+  # The summed first-to-second-order gap, and the trace form of p_D against
+  # which it is checked: sum_u (log CPO_u^(1) - log CPO_u^(2)) = tr(Omega* I)/2
+  # + O(J^-1), the curvature correction the expansion makes over the sample.
+  # Both are NA when the Hessian stage is skipped, since k_sum is then NA for
+  # every unit and elpd_2 does not exist.
+  pd_trace <- sum(per_unit$k_sum)
+  elpd_gap <- elpd_1 - elpd_2
 
   structure(
     list(
@@ -1370,199 +1471,121 @@ inlav_loo <- function(
       se_2 = se_2,
       p_loo_1 = p_loo_1,
       p_loo_2 = p_loo_2,
+      pd_trace = pd_trace,
+      elpd_gap = elpd_gap,
       type = type,
       flavour = flavour,
       n_units = n_units,
       n_groups = lavdata@ngroups,
       n_ok = n_ok,
+      n_lpd_ok = n_lpd_ok,
       second_order = isTRUE(second_order),
+      use_second = use_second,
       theta_overridden = theta_overridden
     ),
     class = "inlavaan_loo"
   )
 }
 
-# ---- Sampling-based WAIC -----------------------------------------------------
+# ---- Deterministic WAIC ------------------------------------------------------
 #
-# Unlike the Taylor LOO above, WAIC is computed from an S x n matrix of unit
-# log-likelihoods evaluated over posterior draws (one implied-moment build
-# per draw, reusing the casewise kernels):
-#   lpd_u    = log mean_s p(y_u | theta_s)
-#   p_waic_u = var_s log p(y_u | theta_s)
+# WAIC from the same per-unit Taylor quantities as the LOO above -- no
+# posterior draws. Under the Gaussian posterior N(theta*, Sigma) and the
+# quadratic surrogate l_u(theta) ~= l*_u + s_u'd + d'H_u d / 2,
+#   lpd_u    = lpd_1 or lpd_2 (see taylor_loo_unit)
+#   p_waic_u = Var[l_u(theta)] = s_u' Sigma s_u + tr[(H_u Sigma)^2] / 2
+# (the cross term is a third Gaussian moment, hence zero). Both pieces are
+# already computed: s_u' Sigma s_u = 2 * (lpd_1 - l*), and tr[(H_u Sigma)^2]
+# is per_unit$k_ssq. The variance is a polynomial in Gaussian moments, so
+# unlike the lpd and log CPO integrals it carries no existence condition of
+# its own. At first order, lpd_1 - p_waic_1 = log_cpo_1 exactly: first-order
+# WAIC and first-order LOO are the same number.
 #   elpd_waic = sum_u (lpd_u - p_waic_u),  waic = -2 * elpd_waic
-
-log_mean_exp <- function(v) {
-  v <- v[is.finite(v)]
-  if (length(v) == 0L) {
-    return(NA_real_) # nocov
-  }
-  a <- max(v)
-  a + log(mean(exp(v - a)))
-}
 
 inlav_waic <- function(
   int,
   type = c("auto", "loso", "loco"),
   units = NULL,
-  nsamp = NULL,
+  second_order = TRUE,
   eff_cores = 1L,
   verbose = FALSE
 ) {
   type <- match.arg(type)
   check_loo_model(int, fn = "waic")
-  nsamp <- nsamp %||% int$nsamp %||% 1000L
-  samp <- sample_params(
-    theta_star = int$theta_star,
-    Sigma_theta = int$Sigma_theta,
-    method = int$marginal_method,
-    approx_data = int$approx_data,
-    pt = int$partable,
-    lavmodel = int$lavmodel,
-    nsamp = nsamp,
-    R_star = int$R_star
+  # The consolidated reversion to first order concerns the log CPO side
+  # only; WAIC reads none of those terms, so the warning is muffled here
+  res <- withCallingHandlers(
+    inlav_loo(
+      int,
+      type = type,
+      units = units,
+      second_order = second_order,
+      eff_cores = eff_cores,
+      verbose = verbose
+    ),
+    inlavaan_loo_first_order = function(w) invokeRestart("muffleWarning")
   )
-  waic_from_draws(
-    int,
-    samp$x_samp,
-    type = type,
-    units = units,
-    eff_cores = eff_cores,
-    verbose = verbose
-  )
+  waic_from_taylor(res)
 }
 
-# WAIC from an existing matrix of posterior draws (lavaan-x space). Used by
-# inlav_waic() with fresh draws and by the fit-time path with the draws the
-# fit already produced, so that fit-time WAIC costs only the casewise pass.
-waic_from_draws <- function(
-  int,
-  x_samp,
-  type = c("auto", "loso", "loco"),
-  units = NULL,
-  eff_cores = 1L,
-  verbose = FALSE
-) {
-  type <- match.arg(type)
-  pt <- int$partable
-  lavmodel <- int$lavmodel
-  lavdata <- int$lavdata
-  two_level <- is_multilevel(lavdata)
-  two_level_missing <- two_level && isTRUE(int$lavsamplestats@missing.flag)
-  nsamp <- nrow(x_samp)
+# Assemble the WAIC object from a fitted inlavaan_loo result. Also used by
+# the fit-time path, where it makes the WAIC free once the LOO has run.
+#
+# Existence. p_waic is a polynomial in the posterior moments -- s_u' Sigma
+# s_u from the score, tr[(H_u Sigma)^2] from the curvature -- so it is
+# finite for every unit and carries no condition of its own. The second-
+# order WAIC therefore exists exactly where its lpd term does, i.e. where
+# Sigma^-1 - H_u is positive definite (equivalently k_min > -1). The log CPO
+# condition k_max < 1 is irrelevant here: WAIC reads no case-deletion term,
+# so a unit whose deleted posterior is improper can still carry an exact
+# second-order WAIC.
+#
+# When the lpd term fails, every estimate falls to first order over all
+# units rather than substituting first-order terms for the failing units
+# alone. elpd_waic is a headline predictive score, and mixing two Taylor
+# orders inside one reported number is what the package refuses to do (the
+# same discipline loo() applies to elpd_loo); the mixed alternative is
+# reserved for p_loo, a secondary diagnostic. The fallback is exact rather
+# than merely lower-order: at first order lpd_1 - p_waic_1 = log_cpo_1
+# identically, so the first-order WAIC *is* the first-order LOO score.
+waic_from_taylor <- function(res) {
+  pu <- res$per_unit
+  n_units <- res$n_units
+  quad <- 2 * (pu$lpd_1 - pu$l_star) # s_u' Sigma s_u
 
-  # Resolve unit type (matches loo): conditional WAIC = leave-one-unit-out,
-  # marginal WAIC = leave-one-cluster-out (Merkle, Furr & Rabe-Hesketh 2019)
-  if (type == "auto") {
-    type <- if (two_level) "loco" else "loso"
-  } else if (type == "loco" && !two_level) {
-    cli_abort(
-      "Leave-one-cluster-out requires a two-level model, but this model has
-       no clusters."
+  has_lpd_2 <- !is.na(pu$lpd_2)
+  n_lpd_ok <- sum(has_lpd_2)
+  use_second <- isTRUE(res$second_order) && n_lpd_ok == n_units
+
+  if (isTRUE(res$second_order) && n_lpd_ok < n_units) {
+    n_bad <- n_units - n_lpd_ok
+    bad_units <- cli_vec(
+      pu$unit[!has_lpd_2],
+      style = list("vec-trunc" = 10L)
     )
-  } else if (type == "loso" && two_level) {
-    cli_warn(c(
-      "Scoring leave-one-unit-out (the {.emph conditional} WAIC) on a
-       two-level model, not the default leave-one-cluster-out (the
-       {.emph marginal} WAIC).",
-      "i" = "These target different predictions -- a new observation within an
-       observed cluster vs a new cluster -- and are easily conflated
-       (Merkle, Furr & Rabe-Hesketh, 2019)."
-    ))
-  }
-  per_row_2l <- type == "loso" && two_level
-
-  unit_group <- NULL
-  if (per_row_2l) {
-    X <- lavdata@X[[1L]]
-    if (two_level_missing) {
-      minfo <- loco_missing_info(int)
-    } else {
-      css <- loco_suff_stats(lavdata)
-    }
-    units <- check_loo_units(units, nrow(X), "rows")
-    nobs <- rep(1L, length(units))
-  } else if (two_level_missing) {
-    minfo <- loco_missing_info(int)
-    units <- check_loo_units(units, minfo$J, "clusters")
-    nobs <- minfo$n_j[units]
-  } else if (two_level) {
-    css <- loco_suff_stats(lavdata)
-    units <- check_loo_units(units, css$J, "clusters")
-    nobs <- css$n_j[units]
-  } else {
-    dv <- loso_data_view(lavmodel, lavdata, x_idx = int$lavsamplestats@x.idx)
-    uv <- loso_resolve_units(lavdata, units)
-    units <- uv$ids
-    unit_group <- uv$grp
-    nobs <- rep(1L, uv$n)
-  }
-
-  one_draw <- function(s) {
-    lavmodel_x <- lavaan::lav_model_set_parameters(lavmodel, x_samp[s, ])
-    mom <- loo_implied_moments(lavmodel_x, two_level)
-    tryCatch(
-      if (per_row_2l && two_level_missing) {
-        loso2l_missing_loglik_all(units, minfo, mom)
-      } else if (per_row_2l) {
-        loso2l_loglik_all(units, css, X, mom)
-      } else if (two_level_missing) {
-        vapply(
-          units,
-          function(j) loco_missing_loglik_one(j, minfo, mom),
-          numeric(1)
-        )
-      } else if (two_level) {
-        vapply(units, function(j) loco_loglik_one(j, css, mom), numeric(1))
-      } else {
-        # includes the exchangeability constant; 0 with a mean structure
-        loso_loglik_units(uv, dv, mom)
-      },
-      error = function(e) rep(NA_real_, length(units)) # nocov
-    )
-  }
-  ll_list <- run_parallel_or_serial(
-    m = nsamp,
-    FUN = one_draw,
-    cores = eff_cores,
-    verbose = verbose,
-    msg_serial = "Evaluating unit log-likelihoods at draw {j}/{m}.",
-    msg_parallel = "Evaluating unit log-likelihoods at {m} draws ({cores} cores).",
-    msg_done = "Evaluate unit log-likelihoods at {m} draw{?s}."
-  )
-  ll_mat <- do.call(rbind, ll_list) # nsamp x n_units
-
-  # Score a fixed.x fit on its conditional likelihood: subtract the
-  # frozen-covariate marginal, a per-unit constant across draws
-  flavour <- loo_flavour(int)
-  if (flavour == "conditional") {
-    mom0 <- loo_grad_cache(
-      int$theta_star,
-      lavmodel,
-      pt,
-      two_level = two_level
-    )$mom
-    cvec <- if (per_row_2l) {
-      loo_fixedx_rowdiff_loco(int, css, X, units, mom0)
-    } else if (two_level) {
-      loo_fixedx_const_loco(int, css, units, mom0)
-    } else {
-      loso_fixedx_const_units(int, uv, dv, mom0)
-    }
-    ll_mat <- sweep(ll_mat, 2L, cvec, "-")
-  }
-
-  lpd <- apply(ll_mat, 2L, log_mean_exp)
-  p_waic <- apply(ll_mat, 2L, var, na.rm = TRUE)
-  elpd_waic_u <- lpd - p_waic
-  n_units <- length(units)
-
-  n_high <- sum(p_waic > 0.4, na.rm = TRUE)
-  if (n_high > 0L) {
     cli_warn(
-      "{n_high} unit{?s} {?has/have} p_waic > 0.4, so the WAIC may be
-       unreliable. Consider {.fn loo} instead."
+      c(
+        "Reverting to first-order approximation.",
+        "i" = "{n_bad} of {n_units} units {qty(n_bad)}{?has/have} no
+               second-order {.field lpd}: {.val {bad_units}}.",
+        "i" = "{qty(n_bad)}{?Its/Their} lpd integral does not converge
+               ({.field k_min} at or below -1), so the second-order
+               {.field elpd_waic} does not exist over the scored units.",
+        "i" = "The first-order WAIC reported instead equals the first-order
+               {.fn loo} score exactly."
+      ),
+      class = "inlavaan_waic_first_order"
     )
   }
+
+  if (use_second) {
+    p_waic <- quad + 0.5 * pu$k_ssq
+    lpd <- pu$lpd_2
+  } else {
+    p_waic <- quad
+    lpd <- pu$lpd_1
+  }
+  elpd_waic_u <- lpd - p_waic
 
   estimates <- cbind(
     Estimate = c(sum(elpd_waic_u), sum(p_waic), -2 * sum(elpd_waic_u)),
@@ -1575,23 +1598,27 @@ waic_from_draws <- function(
   rownames(estimates) <- c("elpd_waic", "p_waic", "waic")
 
   per_unit <- data.frame(
-    unit = units,
-    nobs = nobs,
+    unit = pu$unit,
+    nobs = pu$nobs,
     lpd = lpd,
     p_waic = p_waic,
     elpd_waic = elpd_waic_u
   )
-  per_unit <- add_loo_group_column(per_unit, unit_group, lavdata)
+  if (!is.null(pu$group)) {
+    per_unit <- cbind(per_unit[1L], group = pu$group, per_unit[-1L])
+  }
 
   structure(
     list(
       per_unit = per_unit,
       estimates = estimates,
-      type = type,
-      flavour = flavour,
+      type = res$type,
+      flavour = res$flavour,
       n_units = n_units,
-      n_groups = lavdata@ngroups,
-      nsamp = nsamp
+      n_groups = res$n_groups,
+      n_lpd_ok = n_lpd_ok,
+      second_order = isTRUE(res$second_order),
+      use_second = use_second
     ),
     class = "inlavaan_waic"
   )

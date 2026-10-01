@@ -11,7 +11,8 @@
 #'   posterior draws. \code{"plugin"} returns the deviance evaluated at the
 #'   posterior mean point estimate, \eqn{\hat{D} = -2\log p(y \mid \hat\theta)}
 #'   (matching \code{-2 * logLik(object, type = "plugin")}). Both require the
-#'   model to have been fitted with \code{test != "none"}.
+#'   model to have been fitted with a \code{test} that includes
+#'   \code{"dic"} (the default \code{"standard"} does).
 #' @param ... Currently unused.
 #'
 #' @returns A length-one numeric of class \code{inlavaan_deviance}, with the
@@ -24,6 +25,12 @@
 #' \eqn{p_D = \bar{D} - \hat{D}} is the effective number of parameters. Use
 #' [compare()] to compare models by DIC (or Bayes factors, or LOO/WAIC)
 #' rather than comparing raw deviances directly.
+#'
+#' This \eqn{p_D} is estimated from the posterior draws. [loo()] reaches the
+#' same quantity in closed form as `pd_trace`, the trace
+#' \eqn{\mathrm{tr}(\Sigma \mathcal{I})}; the two routes estimate one target
+#' but do not agree exactly in a finite sample. Neither is `p_loo`, which
+#' estimates something else entirely (see [loo()]).
 #'
 #' @seealso [logLik()], [compare()]
 #'
@@ -48,10 +55,10 @@
 deviance.INLAvaan <- function(object, type = c("mean", "plugin"), ...) {
   type <- match.arg(type)
   int <- get_inlavaan_internal(object)
-  if (is.null(int$DIC)) {
+  if (!has_test(int, "dic")) {
     cli_abort(
-      "{.fn deviance} requires DIC components. Refit with
-       {.code test != \"none\"}."
+      "{.fn deviance} requires DIC components. Refit with {.arg test}
+       including {.val dic} (the default {.val standard} does)."
     )
   }
   val <- if (type == "mean") int$DIC$Dbar else int$DIC$Dhat
@@ -67,9 +74,13 @@ deviance.INLAvaan <- function(object, type = c("mean", "plugin"), ...) {
 print.inlavaan_deviance <- function(x, digits = 3L, ...) {
   cat(sprintf("Deviance: %s\n", format(round(unclass(x), digits))))
   cat(col_grey(paste0(
-    "# ", symbol$info,
-    " pD = ", format(round(attr(x, "pD"), digits)),
-    ", DIC = ", format(round(attr(x, "DIC"), digits)), "\n"
+    "# ",
+    symbol$info,
+    " pD = ",
+    format(round(attr(x, "pD"), digits)),
+    ", DIC = ",
+    format(round(attr(x, "DIC"), digits)),
+    "\n"
   )))
   invisible(x)
 }

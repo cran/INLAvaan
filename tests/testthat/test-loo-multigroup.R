@@ -1,3 +1,7 @@
+# Extended LOO suite pinned to reference values. It runs in CI, and
+# test-loo-loso.R covers the core LOO on CRAN.
+skip_on_cran()
+
 # Multigroup LOSO: groups are independent, so every single-group kernel
 # applies blockwise with group-indexed moments and constants. Units are
 # identified by case index, so they keep their identity across fits that
@@ -59,7 +63,7 @@ ll_at_mode <- function(fit) {
   )
   opts <- fit@Options
   opts$estimator <- "ML"
-  INLAvaan:::lavaan___lav_model_loglik(
+  lavaan:::lav_model_loglik(
     lavdata = int$lavdata,
     lavsamplestats = int$lavsamplestats,
     lavimplied = lavaan::lav_model_implied(lm_x),
@@ -86,6 +90,10 @@ test_that("multigroup LOSO structure: case ids, groups, and identities", {
       "log_cpo_1",
       "log_cpo_2",
       "det_term",
+      "k_max",
+      "k_min",
+      "k_sum",
+      "k_ssq",
       "ok"
     )
   )
@@ -295,10 +303,14 @@ test_that("conditional flavour scores fixed.x multigroup fits", {
     asem,
     c(list(mod_x, dat_mg_x, group = "school", fixed.x = TRUE), fit_args)
   )
-  res_x <- loo(fit_x)
+  # A few influential rows have no second-order term, which takes every
+  # estimate for this fit down to first order
+  expect_warning(res_x <- loo(fit_x), "no second-order term")
   expect_equal(res_x$flavour, "conditional")
-  # a couple of influential rows fall back to first order by design
-  expect_gte(res_x$n_ok, ceiling(0.9 * res_x$n_units))
+  expect_lt(res_x$n_ok, res_x$n_units)
+  expect_false(res_x$use_second)
+  expect_true(is.na(res_x$elpd_2))
+  expect_equal(unname(res_x$estimates["elpd_loo", "Estimate"]), res_x$elpd_1)
   expect_true(all(is.finite(res_x$per_unit$log_cpo_1)))
   expect_true(all(is.finite(res_x$per_unit$log_cpo_2[res_x$per_unit$ok])))
   # the NA grade row is listwise-deleted, so its case id is not a unit
@@ -311,17 +323,24 @@ test_that("conditional flavour scores fixed.x multigroup fits", {
 })
 
 test_that("waic() supports multigroup fits and agrees with loo()", {
-  set.seed(2)
-  w <- suppressWarnings(waic(fit_conf, nsamp = 100))
+  w <- suppressWarnings(waic(fit_conf))
   expect_s3_class(w, "inlavaan_waic")
   expect_equal(w$n_units, 120L)
   expect_equal(w$n_groups, 2L)
   expect_true("group" %in% names(w$per_unit))
   expect_true(all(is.finite(w$per_unit$lpd)))
   expect_output(print(w), "in 2 groups")
-  expect_equal(
-    unname(w$estimates["elpd_waic", "Estimate"]),
-    res_conf$elpd_2,
-    tolerance = 0.005
-  )
+  if (isTRUE(w$use_second)) {
+    expect_equal(
+      unname(w$estimates["elpd_waic", "Estimate"]),
+      res_conf$elpd_2,
+      tolerance = 0.005
+    )
+  } else {
+    expect_equal(
+      unname(w$estimates["elpd_waic", "Estimate"]),
+      res_conf$elpd_1,
+      tolerance = 1e-10
+    )
+  }
 })

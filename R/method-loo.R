@@ -8,120 +8,71 @@
 #'
 #' @details
 #' For a unit \eqn{u} (a subject for LOSO, a cluster for LOCO) with
-#' log-likelihood contribution \eqn{\ell_u(\theta)}, score \eqn{s_u} and
-#' Hessian \eqn{H_u} evaluated at the posterior summary
-#' \eqn{(\theta^*, \Sigma)}, the log conditional predictive ordinate is
-#' approximated to first and second order by
-#' \deqn{\log \mathrm{CPO}_u^{(1)} = \ell_u - \tfrac{1}{2} s_u' \Sigma s_u,}
+#' log-likelihood contribution \eqn{\ell_u(\theta)}, score \eqn{s_u} and Hessian
+#' \eqn{H_u} evaluated at the posterior summary \eqn{(\theta^*, \Omega)}, the
+#' log conditional predictive ordinate is approximated to first and second order
+#' by
+#' \deqn{\log \mathrm{CPO}_u^{(1)} = \ell_u - \tfrac{1}{2} s_u' \Omega s_u,}
 #' \deqn{\log \mathrm{CPO}_u^{(2)} = \ell_u
-#'   - \tfrac{1}{2} s_u' (\Sigma^{-1} + H_u)^{-1} s_u
-#'   + \tfrac{1}{2} \log |I + \Sigma H_u|.}
+#'   - \tfrac{1}{2} s_u' (\Omega^{-1} + H_u)^{-1} s_u
+#'   + \tfrac{1}{2} \log |I + \Omega H_u|.}
 #' The reported `elpd_loo` is the sum of the second-order terms (first-order
 #' when `second_order = FALSE`), with standard error
-#' \eqn{\sqrt{n \, \mathrm{var}(\log \mathrm{CPO}_u)}} and
-#' `looic` \eqn{= -2 \, \mathrm{elpd}}. The effective number of parameters is
-#' \eqn{p_{\mathrm{loo}} = \sum_u (\mathrm{lpd}_u - \log \mathrm{CPO}_u)},
-#' where \eqn{\mathrm{lpd}_u} is the analogous Taylor approximation of the
-#' full-posterior pointwise log predictive density. Units whose second-order
-#' curvature matrix is not positive definite fall back to first order for
-#' that unit only (flagged in `per_unit$ok`).
+#' \eqn{\sqrt{n \, \mathrm{var}(\log \mathrm{CPO}_u)}} and `looic`
+#' \eqn{= -2 \, \mathrm{elpd}}. `p_loo` is the **loo** package's effective
+#' number of parameters,
+#' \eqn{p_{\mathrm{loo}} = \sum_u (\mathrm{lpd}_u - \log \mathrm{CPO}_u)}, where
+#' \eqn{\mathrm{lpd}_u} is the analogous Taylor approximation of the
+#' full-posterior pointwise log predictive density -- the same definition
+#' `loo::loo()` reports, and *not* the \eqn{p_D} of the DIC.
 #'
-#' The type is resolved automatically: per-cluster (`"loco"`) when the model
-#' was fitted with a `cluster` argument, per-subject (`"loso"`) otherwise.
-#' For a two-level model these are the two estimands of Merkle, Furr &
-#' Rabe-Hesketh (2019): the default per-cluster `"loco"` is the *marginal*
-#' predictive (leave-one-cluster-out -- prediction for a *new* cluster),
-#' while `type = "loso"` forces the *conditional* predictive
-#' (leave-one-unit-out -- prediction for a new observation within an
-#' *observed* cluster), where row \eqn{i} of cluster \eqn{j} contributes
-#' \eqn{\ell_i = \ell_j(\mathrm{full}) - \ell_j(\mathrm{minus\ row\ } i)},
-#' the conditional density of the row given the rest of its cluster. The two
-#' answer different questions and are easily conflated, so the per-cluster
-#' marginal is the default and `type = "loso"` warns. It works with and
-#' without missing data, costs one cluster evaluation per row per Hessian
-#' direction, and is best subset with `units`.
+#' \eqn{\log \mathrm{CPO}_u^{(2)}} exists exactly when \eqn{\Omega^{-1} + H_u}
+#' is positive definite (recorded in `per_unit$ok`) and
+#' \eqn{\mathrm{lpd}_u^{(2)}} exactly when \eqn{\Omega^{-1} - H_u} is. A unit
+#' failing the former drops every estimate to first order over all units (with a
+#' warning), while one failing only the latter contributes its first-order
+#' difference to `p_loo`.
 #'
-#' **Multigroup models.** Groups are independent, so each unit is scored
-#' against its own group's implied moments; without a mean structure the
-#' exchangeability transformation applies per group, and cross-group
-#' equality constraints (`group.equal`) flow through the packed parameter
-#' space automatically. The per-unit results are stacked by group (a
-#' `group` column records the membership), and units are identified by
-#' *case number* -- the row number of the analysed dataset -- so a unit
-#' keeps its identity across fits that assign or order groups differently
-#' (e.g. a pooled fit versus a grouped fit of the same data, which
-#' [compare()] pairs unit by unit). This makes
-#' `compare(..., loo = TRUE)` the instrument of choice for the
-#' measurement-invariance ladder: configural, metric, and scalar fits are
-#' compared on a proper predictive scale with paired standard errors.
+#' The leverages `k_max`, `k_min`, and `k_sum` read these conditions off the
+#' spectrum of \eqn{-\Omega H_u} (`k_max < 1`, `k_min > -1`), with `k_sum`
+#' summing across units to the trace form of \eqn{p_D}. `p_loo` (cross-product
+#' form) and \eqn{p_D} (second-derivative form) agree only in the
+#' correct-specification limit, and printing a result reports the
+#' first-to-second-order gap against its limit \eqn{p_D/2} as a free check on
+#' the Taylor truncation. Because the first-order elpd overstates the truth by
+#' \eqn{\tfrac12 p_D} in the limit, keep `second_order = TRUE` whenever models
+#' of different dimension are compared.
 #'
-#' Supplying `theta` and/or `Sigma` scores the model at an *arbitrary*
-#' Gaussian posterior summary instead of the fit's own, without refitting.
-#' This is the building block for refit-free model exploration: for example,
-#' conditioning the encompassing model's summary on a parameter being zero
-#' (a rank-one update of `theta` and `Sigma`) and scoring the result gives
-#' the LOO of that submodel from a single fit. INLAvaan provides only this
-#' evaluation API; search strategies are left to the user. A conditioned
-#' `Sigma` may be singular; the computation automatically restricts to the
-#' non-degenerate block, which is exact.
+#' `type = "auto"` resolves to the marginal per-cluster `"loco"` for two-level
+#' fits and per-subject `"loso"` otherwise. Forcing `"loso"` on a two-level
+#' model scores the *conditional* predictive of Merkle, Furr & Rabe-Hesketh
+#' (2019) instead, and warns. Multigroup units are scored against their own
+#' group's implied moments and identified by case number, so [compare()] pairs
+#' them across fits.
 #'
-#' Parallelism is strictly opt-in: the default `cores = NULL` runs serially,
-#' and `cores > 1` parallelises the Hessian stage via forking (not available
-#' on Windows).
+#' The score follows the fitted likelihood's treatment of exogenous
+#' covariates, i.e. joint under `fixed.x = FALSE`, conditional under
+#' `fixed.x = TRUE` (recorded as `"joint"` or `"conditional"` in the result's
+#' `flavour` field), and the two flavours are never comparable ([compare()]
+#' refuses to mix them).
 #'
-#' Calling `loo()` never modifies the fitted object. Under the default
-#' `test = "standard"`, [inlavaan()] already computes and stores the full
-#' LOO at fit time whenever the model is supported, has a mean structure,
-#' and the predicted serial cost is within a 10-second budget (measured by
-#' timing one score evaluation); `test = "loo"` forces the computation
-#' regardless of the budget, and `fit <- add_loo(fit)` stores it post hoc.
-#' A stored result is returned directly by `loo(fit)` when called with
-#' default arguments, and is reused by [fitmeasures()] and [compare()]
-#' without recomputation.
+#' Supplying `theta`/`Omega` evaluates the LOO at an arbitrary Gaussian
+#' posterior summary (a singular `Omega` is restricted to its non-degenerate
+#' block), the building block for refit-free submodel scoring. `Sigma` is
+#' the deprecated former name of `Omega`, still accepted through `...` with
+#' a warning.
 #'
-#' **Exogenous covariates.** The flavour of the score follows the fitted
-#' likelihood. Under `fixed.x = FALSE` the covariates are modelled jointly
-#' and each unit is scored by the joint predictive density of its outcomes
-#' *and* covariates (`flavour = "joint"`). Under `fixed.x = TRUE` (the
-#' lavaan default) the fitted likelihood is the conditional one, and each
-#' unit is scored by the predictive density of its outcomes *given* its
-#' covariates (`flavour = "conditional"`); since the conditional likelihood
-#' is exactly invariant to the frozen covariate moments, this involves no
-#' additional approximation. The two flavours estimate different quantities
-#' whose scales differ by the covariate predictive density, so a joint and a
-#' conditional elpd must never be compared ([compare()] refuses
-#' mixed-flavour comparisons). Conditional scores of models conditioning on
-#' *different* covariate sets are comparable provided the outcome variables
-#' match -- the natural setting for covariate selection. Both flavours
-#' support any covariate placement: single-level covariates, and
-#' cluster-level (between) and/or within-level covariates in two-level
-#' models.
+#' The LOO is stored with the fit when [inlavaan()]'s `test` includes
+#' `"loo"` or `"waic"` (e.g. `test = "full"`), which also stores the WAIC
+#' (see [waic()]) from the same Taylor pass, or afterwards with
+#' [add_loo()]; `loo(fit)` with default arguments then returns the stored
+#' result. Under the default `test = "standard"` nothing is stored and
+#' `loo(fit)` computes it on demand.
 #'
-#' **Missing data.** Fits estimated by full-information maximum likelihood
-#' (`missing = "ml"`) are scored on the *observed-data* predictive: each
-#' unit contributes the density of the entries it actually has, with its
-#' full row (single-level) or whole cluster (two-level) removed from the
-#' conditioning set. For single-level fits the casewise kernels operate on
-#' each unit's observed subset, grouping rows by missing pattern, so a unit
-#' with fewer observed entries contributes a smaller log-likelihood term
-#' *and* a smaller score and thus self-weights in the elpd. Two-level fits
-#' are scored per cluster (`"loco"`): each cluster contributes its
-#' observed-data marginal likelihood, evaluated by lavaan's raw-data
-#' cluster kernels (no per-cluster sufficient statistics are needed, since
-#' leave-one-cluster-out deletes the whole cluster). All carry the same
-#' missing-at-random assumption as the FIML fit itself. Because the score
-#' is the observed-entry predictive, a [compare()] of two missing-data fits
-#' is meaningful only when they share the same observed entries (the same
-#' data *and* the same holes). The two-level conditional predictive
-#' (`type = "loso"`) is available under missing data too, on the same
-#' kernels.
-#'
-#' Supported models: continuous-indicator models fitted with the `ML`
-#' estimator (including FIML, `missing = "ml"`, single- and two-level),
-#' single-group or multigroup (multigroup two-level models are not
-#' supported yet). If the `loo` package is attached it masks this generic,
-#' but `loo(fit)` continues to dispatch correctly because the method is
-#' registered by generic name.
+#' The default `cores = NULL` runs serially, and `cores > 1` parallelises the
+#' Hessian stage. Supported models are continuous-indicator models fitted with
+#' the `ML` estimator, single- or two-level, single-group or multigroup
+#' (multigroup two-level models are not supported yet).
 #'
 #' @param x A fitted [INLAvaan] object (or its `inlavaan_internal` list).
 #' @param type Unit type: `"auto"` (default) resolves to `"loso"`
@@ -132,40 +83,65 @@
 #'   see Details).
 #' @param units Optional integer vector of unit indices to score; defaults
 #'   to all units. For LOSO these are case numbers (row numbers of the
-#'   analysed dataset, as recorded in the fit -- for multigroup fits the
-#'   full results are stacked by group, but a unit is always addressed by
-#'   its case number); for LOCO, cluster positions.
+#'   analysed dataset); for LOCO, cluster positions.
 #' @param second_order Logical; compute the second-order correction
-#'   (default `TRUE`). `FALSE` skips the Hessian stage entirely and reports
-#'   first-order estimates.
-#' @param theta,Sigma Optional posterior mean vector and covariance matrix
+#'   (default `TRUE`). `FALSE` skips the Hessian stage and reports
+#'   first-order estimates, which cannot be compared across models of
+#'   different dimension (see Details).
+#' @param theta,Omega Optional posterior mean vector and covariance matrix
 #'   (in the unconstrained parameter space, as stored in `theta_star` and
 #'   `Sigma_theta`) at which to evaluate the LOO instead of the fit's own
 #'   Laplace summary. See Details.
 #' @param cores Number of cores for the Hessian stage. The default `NULL`
 #'   runs serially; parallelism must be requested explicitly.
 #' @param verbose Logical; print progress (default `FALSE`).
-#' @param ... Not used.
+#' @param ... Not used, beyond catching the deprecated argument name
+#'   `Sigma` (see `Omega`).
 #'
 #' @returns An object of class `inlavaan_loo`: a list with elements
 #'   \describe{
-#'     \item{`per_unit`}{Data frame of pointwise results: `unit` (case
-#'       number for LOSO, cluster position for LOCO), `group` (multigroup
-#'       fits only), `nobs` (1 for LOSO, the cluster size for LOCO),
-#'       `l_star` (unit log-likelihood at the summary), `score_norm`,
-#'       `lpd_1`/`lpd_2` (pointwise log predictive density),
-#'       `log_cpo_1`/`log_cpo_2` (pointwise LOO contributions), `det_term`,
-#'       and `ok` (second-order success flag).}
+#'     \item{`per_unit`}{Data frame of pointwise results, one row per
+#'       unit:
+#'       \describe{
+#'         \item{`unit`}{Case number for LOSO, cluster position for LOCO.}
+#'         \item{`group`}{Group membership (multigroup fits only).}
+#'         \item{`nobs`}{1 for LOSO, the cluster size for LOCO.}
+#'         \item{`l_star`}{Unit log-likelihood at the summary.}
+#'         \item{`score_norm`}{Norm of the unit score \eqn{s_u}.}
+#'         \item{`lpd_1`, `lpd_2`}{Pointwise log predictive density, at
+#'           first and second order.}
+#'         \item{`log_cpo_1`, `log_cpo_2`}{Pointwise LOO contributions,
+#'           at first and second order.}
+#'         \item{`det_term`}{\eqn{\tfrac12 \log |I + \Omega H_u|}, the
+#'           determinant term of the second-order score.}
+#'         \item{`k_max`, `k_min`, `k_sum`}{Leverage diagnostics (see
+#'           Details).}
+#'         \item{`k_ssq`}{\eqn{\mathrm{tr}[(\Omega H_u)^2]}, consumed by
+#'           the closed-form [waic()] penalty.}
+#'         \item{`ok`}{Whether the second-order \eqn{\log \mathrm{CPO}}
+#'           exists.}
+#'       }}
 #'     \item{`estimates`}{Matrix with rows `elpd_loo`, `p_loo`, `looic` and
-#'       columns `Estimate`, `SE` (headline second-order values).}
+#'       columns `Estimate`, `SE`, at the highest order available to each.}
 #'     \item{`elpd_1`, `elpd_2`, `se_1`, `se_2`, `p_loo_1`, `p_loo_2`}{
-#'       First- and second-order aggregates.}
-#'     \item{`type`, `flavour`, `n_units`, `n_groups`, `n_ok`,
-#'       `second_order`, `theta_overridden`}{Metadata; `flavour` records
-#'       whether units were scored jointly with their covariates
-#'       (`"joint"`) or conditionally on them (`"conditional"`, for
-#'       `fixed.x` fits).}
+#'       First- and second-order aggregates; the second-order ones are `NA`
+#'       when any \eqn{\log \mathrm{CPO}_u^{(2)}} does not exist.}
+#'     \item{`elpd_gap`, `pd_trace`}{The two sides of the curvature check
+#'       (see Details); both are `NA` at first order and partial totals
+#'       under a `units` subset.}
+#'     \item{`type`, `flavour`, `n_units`, `n_groups`, `n_ok`, `n_lpd_ok`,
+#'       `second_order`, `use_second`, `theta_overridden`}{Metadata.}
 #'   }
+#'
+#' @references
+#' Alhyari, M., Jamil, H., Montcho, H., & Rue, H. (2026). *Deterministic
+#' leave-one-cluster-out cross-validation for multilevel Bayesian structural
+#' equation models*. arXiv. (Preprint forthcoming; placeholder.)
+#'
+#' Merkle, E. C., Furr, D., & Rabe-Hesketh, S. (2019). Bayesian comparison of
+#' latent variable models: Conditional versus marginal likelihoods.
+#' *Psychometrika*, *84*(3), 802--829.
+#' \doi{10.1007/s11336-019-09679-0}
 #'
 #' @seealso [fitmeasures()], [compare()], [inlavaan()]
 #'
@@ -184,7 +160,7 @@ loo.INLAvaan <- function(
   units = NULL,
   second_order = TRUE,
   theta = NULL,
-  Sigma = NULL,
+  Omega = NULL,
   cores = NULL,
   verbose = FALSE,
   ...
@@ -195,9 +171,10 @@ loo.INLAvaan <- function(
     units = units,
     second_order = second_order,
     theta = theta,
-    Sigma = Sigma,
+    Omega = Omega,
     cores = cores,
-    verbose = verbose
+    verbose = verbose,
+    ...
   )
 }
 
@@ -209,12 +186,13 @@ loo.inlavaan_internal <- function(
   units = NULL,
   second_order = TRUE,
   theta = NULL,
-  Sigma = NULL,
+  Omega = NULL,
   cores = NULL,
   verbose = FALSE,
   ...
 ) {
   type <- match.arg(type)
+  Omega <- resolve_deprecated_Sigma(Omega, ...)
 
   # Reuse a stored result (computed at fit time via test = "loo", or with
   # add_loo()) when no argument deviates from the defaults
@@ -222,7 +200,7 @@ loo.inlavaan_internal <- function(
     is.null(units) &&
     isTRUE(second_order) &&
     is.null(theta) &&
-    is.null(Sigma)
+    is.null(Omega)
   if (all_defaults && !is.null(x$loo)) {
     if (isTRUE(verbose)) {
       cli_alert_info("Returning the LOO result stored with the fit.")
@@ -236,18 +214,43 @@ loo.inlavaan_internal <- function(
     units = units,
     second_order = second_order,
     theta = theta,
-    Sigma = Sigma,
+    Sigma = Omega,
     eff_cores = resolve_loo_cores(cores),
     verbose = verbose
   )
 }
 
+# The covariance argument was renamed from Sigma to Omega, the notation of the
+# accompanying manuscript. A legacy `Sigma =` no longer matches a formal and
+# lands in ..., where it is honoured so existing scripts keep running, with a
+# deprecation warning.
+resolve_deprecated_Sigma <- function(Omega, ...) {
+  dots <- list(...)
+  if (!"Sigma" %in% names(dots)) {
+    return(Omega)
+  }
+  if (!is.null(Omega)) {
+    cli_abort(
+      "Supply only {.arg Omega}; {.arg Sigma} is its deprecated former name."
+    )
+  }
+  cli_warn(
+    "The {.arg Sigma} argument of {.fn loo} is deprecated; use {.arg Omega}
+     instead.",
+    class = "inlavaan_deprecated_sigma"
+  )
+  dots$Sigma
+}
+
 #' @rdname loo
-#' @param object A fitted [INLAvaan] object.
-#' @returns `add_loo()` returns a copy of `object` with the LOO result
-#'   stored alongside the fit (the input object is unchanged); reassign it,
-#'   e.g. `fit <- add_loo(fit)`. Only the default LOO is stored, so the
-#'   stored result always matches `loo(fit)`.
+#' @param object A fitted [INLAvaan] object, or an `inlavaan_loo` result for
+#'   `summary()`.
+#' @returns `summary()` is an alias for `print()`: it prints the same output
+#'   and returns the result invisibly.
+#' @returns `add_loo()` returns a copy of `object` with the LOO and WAIC
+#'   results stored alongside the fit (the input object is unchanged);
+#'   reassign it, e.g. `fit <- add_loo(fit)`. Only the default LOO is
+#'   stored, so the stored results always match `loo(fit)` and `waic(fit)`.
 #' @export
 add_loo <- function(object, cores = NULL, verbose = FALSE) {
   if (!is_INLAvaan(object)) {
@@ -255,54 +258,118 @@ add_loo <- function(object, cores = NULL, verbose = FALSE) {
   }
   res <- loo(object, cores = cores, verbose = verbose)
   object@external$inlavaan_internal$loo <- res
+  # LOO and WAIC come from the same Taylor pass, so storing one stores both
+  object@external$inlavaan_internal$waic <- waic_from_taylor(res)
+  int <- object@external$inlavaan_internal
+  rec <- test_record(int)
+  rec$computed <- test_atoms[
+    test_atoms %in% union(rec$computed, c("loo", "waic"))
+  ]
+  rec$skipped <- rec$skipped[!names(rec$skipped) %in% c("loo", "waic")]
+  object@external$inlavaan_internal$test <- rec
   object
 }
 
+#' @rdname loo
 #' @exportS3Method print inlavaan_loo
 print.inlavaan_loo <- function(x, ...) {
   label <- switch(
     x$type,
-    loso = "leave-one-subject-out",
-    loco = "leave-one-cluster-out"
+    loso = "Leave-one-subject-out",
+    loco = "Leave-one-cluster-out"
   )
   unit_word <- switch(x$type, loso = "subject", loco = "cluster")
-  order_lab <- if (x$second_order && x$n_ok > 0L) {
-    "second-order"
-  } else {
-    "first-order"
+  loo_cat_rule(label, loo_rule_label(x, unit_word))
+  cat("\n")
+  print(round(x$estimates, 1))
+  # A missing log CPO term already warned at computation time, and the rule
+  # above records the order, so repeating it here would only duplicate. The
+  # lpd substitution has no warning, so this is the only place it is said.
+  if (isTRUE(x$use_second) && x$n_lpd_ok < x$n_units) {
+    n <- x$n_units
+    n_bad <- n - x$n_lpd_ok
+    cat("\n")
+    loo_cat_note(pluralize(
+      "p_loo uses first-order contributions for {n_bad} of {n} units with no
+       second-order lpd; elpd_loo and looic are unaffected."
+    ))
   }
-  cat("Taylor ", label, " cross-validation (INLAvaan)\n", sep = "")
-  cat(
-    "Computed from ",
-    x$n_units,
-    " ",
-    unit_word,
-    if (x$n_units != 1L) "s",
+  if (isTRUE(x$theta_overridden)) {
+    cat("\n")
+    loo_cat_note("Evaluated at a user-supplied (theta, Sigma) summary.")
+  }
+  loo_print_curvature(x)
+  invisible(x)
+}
+
+#' @rdname loo
+#' @method summary inlavaan_loo
+#' @exportS3Method summary inlavaan_loo
+summary.inlavaan_loo <- function(object, ...) {
+  print(object, ...)
+}
+
+# Rule header and grey note, on stdout. cli's cli_rule()/cli_alert_info()
+# signal a condition that the default handler writes to stderr, which a print
+# method must not do (and which capture.output()/expect_output() would miss),
+# so the string-returning rule() and format_message() are used and cat() picks
+# the connection. format_message() still reflows to the console width.
+loo_cat_rule <- function(left, right) {
+  cat(rule(left = left, right = right), "\n", sep = "")
+}
+
+loo_cat_note <- function(text) {
+  writeLines(col_grey(format_message(c("i" = text))))
+}
+
+# Right-hand label of a rule header: how many units the result covers, in how
+# many groups, and at which Taylor order. Shared by the LOO and WAIC prints.
+# qty(n) is needed because the length-1 unit_word would otherwise set the
+# quantity that {?s} reads.
+loo_rule_label <- function(x, unit_word) {
+  n <- x$n_units
+  paste0(
+    pluralize("{n} {unit_word}{qty(n)}{?s}"),
     if (!is.null(x$n_groups) && x$n_groups > 1L) {
       paste0(" in ", x$n_groups, " groups")
     },
-    " (",
-    order_lab,
-    " Taylor approximation)\n",
-    sep = ""
+    ", ",
+    if (isTRUE(x$use_second)) "second-order" else "first-order"
   )
-  if (identical(x$flavour, "conditional")) {
-    cat("Scored conditionally on the exogenous covariates (fixed.x fit)\n")
+}
+
+# The curvature check: the summed first-to-second-order gap against pD/2, the
+# limit it approaches from above. Both sides are read off the same Laplace
+# summary, so they carry the same Laplace error and much of it cancels, leaving
+# the truncation error the check is after -- which is why the trace route to
+# p_D is used here rather than the sampled pD that summary() prints. Nothing is
+# thresholded: as everywhere else in loo(), existence is the only condition the
+# package acts on, so the excess is reported and the reading is left to the
+# user.
+loo_print_curvature <- function(x) {
+  gap <- x$elpd_gap %||% NA_real_
+  pd_trace <- x$pd_trace %||% NA_real_
+  if (!isTRUE(x$use_second) || !is.finite(gap) || !is.finite(pd_trace)) {
+    return(invisible(NULL))
   }
   cat("\n")
-  print(round(x$estimates, 1))
-  if (x$second_order && x$n_ok < x$n_units) {
-    cat(
-      "\n",
-      x$n_units - x$n_ok,
-      " of ",
-      x$n_units,
-      " units fell back to first order (non-positive-definite curvature).\n",
-      sep = ""
+  loo_cat_rule("Curvature check", "")
+  cat("\n")
+  row <- function(lab, val) cat(sprintf("  %-27s %9s\n", lab, val))
+  row("first-to-second-order gap", sprintf("%.1f", gap))
+  row("pD/2 (trace)", sprintf("%.1f", pd_trace / 2))
+  # A non-positive trace has no scale to take an excess against; the two totals
+  # still say what they say.
+  if (pd_trace > 0) {
+    row(
+      "excess over pD/2 (trace)",
+      sprintf("%+.1f%%", 100 * (gap / (pd_trace / 2) - 1))
+    )
+    cat("\n")
+    loo_cat_note(
+      "The gap approaches pD/2 (trace) from above. A large excess says the
+       second-order expansion has not settled over the sample."
     )
   }
-  if (isTRUE(x$theta_overridden)) {
-    cat("\nEvaluated at a user-supplied (theta, Sigma) summary.\n")
-  }
-  invisible(x)
+  invisible(NULL)
 }

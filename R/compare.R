@@ -4,11 +4,11 @@
 #' statistics and (optionally) fit indices side by side.
 #'
 #' @details
-#' The first argument `x` serves as the **baseline** (null) model.
-#' All models (including the baseline) appear in the comparison table. The
-#' baseline is also passed to [fitMeasures()][lavaan::fitMeasures] when
-#' incremental fit indices (BCFI, BTLI, BNFI) are requested via
-#' `fit.measures`.
+#' All models appear in the comparison table. When incremental fit indices
+#' (BCFI, BTLI, BNFI) are requested via `fit.measures`, they are scaled
+#' against the independence (null) model, fitted once on the data of the
+#' first model and shared by every model in the table (see
+#' [bfit_indices()]).
 #'
 #' The default table always includes:
 #'
@@ -16,19 +16,25 @@
 #'   - **Marg.Loglik**: Approximated marginal log-likelihood.
 #'   - **logBF**: Natural-log Bayes factor relative to the best model.
 #'   - **DIC** / **pD**: Deviance Information Criterion and effective number
-#'     of parameters (when `test != "none"` was used during fitting).
+#'     of parameters (when the fit computed the DIC, i.e. `test` included
+#'     `"dic"` during fitting; the default `"standard"` does).
 #'
 #' Set `fit.measures` to a character vector of measure names (anything
 #' returned by [fitMeasures()][lavaan::fitMeasures]) to append extra columns.
 #' Use `fit.measures = "all"` to include every available measure.
 #'
 #' Set `loo = TRUE` to compare models by leave-one-out cross-validation
-#' (see [loo()]). This appends **ELPD** / **SE** (the second-order Taylor
-#' expected log predictive density and its standard error), **p_loo**, and,
+#' (see [loo()]). This appends **ELPD** / **SE** (the Taylor expected log
+#' predictive density and its standard error), **p_loo**, and,
 #' against the best-ELPD model, the difference **elpd_diff** with its
 #' *paired* standard error **se_diff** computed from the pointwise
 #' contributions (the appropriate uncertainty for nested or same-data
-#' comparisons). The table is then sorted by descending ELPD. All models
+#' comparisons). Every model is scored at one common Taylor order, the
+#' lowest any of them can supply: if some unit of some model has no
+#' second-order term, all models are compared at first order, since
+#' otherwise a change of estimator between models would read as a
+#' difference between the models themselves. The order used is stated when
+#' the table is printed. The table is then sorted by descending ELPD. All models
 #' must be fitted to the same data with matching units; units are paired
 #' by id rather than by row order, so fits that stack groups differently
 #' -- a pooled fit against a multigroup fit, or multigroup fits with
@@ -43,16 +49,14 @@
 #' additionally require identical variable sets across models, while
 #' conditional scores require only matching outcome variables -- covariate
 #' sets may differ, which is the covariate-selection setting. Stored LOO
-#' results (`test = "loo"` or [add_loo()]) are reused.
+#' results (`test` including `"loo"` or `"full"`, or [add_loo()]) are
+#' reused.
 #'
 #' `anova()` is disabled for `INLAvaan` fits -- there is no direct Bayesian
 #' analogue of the classical likelihood-ratio test -- and points here instead.
 #'
-#' @param x An [INLAvaan] (or `inlavaan_internal`) object used as the
-#'   **baseline** (null) model. It is included in the comparison table and
-#'   passed to [fitMeasures()][lavaan::fitMeasures] for incremental indices.
-#' @param y,... One or more [INLAvaan] (or `inlavaan_internal`) objects to
-#'   compare against the baseline.
+#' @param x,y,... Two or more [INLAvaan] (or `inlavaan_internal`) objects
+#'   fitted to the same data.
 #' @param fit.measures Character vector of additional fit-measure names to
 #'   include (e.g. `"BRMSEA"`, `"BCFI"`). Use `"all"` to include every
 #'   measure returned by [fitMeasures()][lavaan::fitMeasures]. The default
@@ -104,7 +108,6 @@ setMethod(
       models = model_objs,
       modnames = modnames,
       fit.measures = fit.measures,
-      baseline = x,
       loo = loo
     )
   }
@@ -136,7 +139,6 @@ compare.inlavaan_internal <- function(
     models = model_objs,
     modnames = modnames,
     fit.measures = fit.measures,
-    baseline = x,
     loo = loo
   )
 }
@@ -147,7 +149,6 @@ compare_impl <- function(
   models,
   modnames,
   fit.measures = NULL,
-  baseline = NULL,
   loo = FALSE
 ) {
   # Normalise to internal objects, keeping originals for fitMeasures()
@@ -230,8 +231,19 @@ compare_impl <- function(
       )
     } else {
       # nocov end
-      # baseline (x) is used for incremental indices
-      baseline_obj <- if (is(baseline, "INLAvaan")) baseline else NULL
+      # One independence baseline, fitted on the first model's data, serves
+      # every model's incremental indices. FALSE skips the refit when none
+      # is requested.
+      need_incr <- identical(fit.measures, "all") ||
+        any(c("BCFI", "BTLI", "BNFI") %in% fit.measures)
+      baseline_obj <- if (need_incr) {
+        tryCatch(
+          fit_independence_baseline(originals[[1]]),
+          error = function(e) NULL
+        )
+      } else {
+        FALSE
+      }
 
       fm_list <- lapply(originals, function(m) {
         tryCatch(
@@ -337,21 +349,25 @@ compare_impl <- function(
       ))
     }
 
+    # One approximation order across the whole comparison. A model whose
+    # units all admit a second-order term would be scored at second order on
+    # its own, but pitting that against a model forced to first order would
+    # read the change of estimator as a difference between the models, so the
+    # comparison drops to the lowest order any of them can supply.
+    order_2 <- all(vapply(loo_list, function(l) isTRUE(l$use_second), TRUE))
+    n_forced <- sum(!vapply(loo_list, function(l) isTRUE(l$use_second), TRUE))
+
     elpd <- vapply(
       loo_list,
-      function(l) unname(l$estimates["elpd_loo", "Estimate"]),
+      function(l) if (order_2) l$elpd_2 else l$elpd_1,
       numeric(1)
     )
     best <- which.max(elpd)
-    # Headline pointwise contributions (second order when available),
-    # aligned to the first model's unit order for pairing
+    # The same pointwise contributions the reported ELPDs are summed from,
+    # aligned to the first model's unit order for pairing, so that se_diff is
+    # the standard error of the elpd_diff actually reported
     pw <- lapply(seq_along(loo_list), function(k) {
-      l <- loo_list[[k]]
-      v <- if (l$second_order && l$n_ok > 0L) {
-        l$per_unit$log_cpo_2
-      } else {
-        l$per_unit$log_cpo_1 # nocov
-      }
+      v <- loo_headline_pointwise(loo_list[[k]]$per_unit, order_2)
       v[align[[k]]]
     })
     n_units <- nrow(pu1)
@@ -360,7 +376,7 @@ compare_impl <- function(
     out$SE <- round(
       vapply(
         loo_list,
-        function(l) unname(l$estimates["elpd_loo", "SE"]),
+        function(l) if (order_2) l$se_2 else l$se_1,
         numeric(1)
       ),
       3
@@ -368,7 +384,7 @@ compare_impl <- function(
     out$p_loo <- round(
       vapply(
         loo_list,
-        function(l) unname(l$estimates["p_loo", "Estimate"]),
+        function(l) if (order_2) l$p_loo_2 else l$p_loo_1,
         numeric(1)
       ),
       3
@@ -381,7 +397,7 @@ compare_impl <- function(
           if (k == best) {
             return(0)
           }
-          sqrt(n_units * var(pw[[k]] - pw[[best]], na.rm = TRUE))
+          sqrt(n_units * var(pw[[k]] - pw[[best]]))
         },
         numeric(1)
       ),
@@ -397,8 +413,12 @@ compare_impl <- function(
 
   rownames(out) <- NULL
   attr(out, "fit_measures_used") <- !is.null(fit.measures)
-  attr(out, "baseline_name") <- modnames[1]
   attr(out, "loo_used") <- isTRUE(loo)
+  if (isTRUE(loo)) {
+    attr(out, "loo_order") <- if (order_2) 2L else 1L
+    attr(out, "loo_n_forced") <- n_forced
+    attr(out, "loo_n_models") <- length(loo_list)
+  }
   class(out) <- c("compare.inlavaan_internal", class(out))
   out
 }
@@ -406,15 +426,30 @@ compare_impl <- function(
 #' @exportS3Method print compare.inlavaan_internal
 print.compare.inlavaan_internal <- function(x, ...) {
   cat("Bayesian Model Comparison (INLAvaan)\n")
-  if (isTRUE(attr(x, "fit_measures_used"))) {
-    cat("Baseline model:", attr(x, "baseline_name"), "\n")
-  } else if (isTRUE(attr(x, "loo_used"))) {
-    cat("Models ordered by ELPD (Taylor LOO)\n")
+  if (isTRUE(attr(x, "loo_used"))) {
+    ord <- attr(x, "loo_order")
+    cat(
+      "Models ordered by ELPD (Taylor LOO, ",
+      if (identical(ord, 2L)) "second" else "first",
+      "-order)\n",
+      sep = ""
+    )
   } else {
     cat("Models ordered by marginal log-likelihood\n")
   }
   if (isTRUE(attr(x, "loo_used"))) {
     cat("elpd_diff/se_diff are paired differences vs the best model\n")
+    n_forced <- attr(x, "loo_n_forced")
+    if (!is.null(n_forced) && n_forced > 0L) {
+      cat(
+        "Scored at first order throughout: ",
+        n_forced,
+        " of ",
+        attr(x, "loo_n_models"),
+        " models have units with no second-order term\n",
+        sep = ""
+      )
+    }
   }
   cat("\n")
   print.data.frame(x, row.names = FALSE)

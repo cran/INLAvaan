@@ -1,107 +1,73 @@
-# Unexported lavaan internals used by INLAvaan. lavaan >= 0.7 renamed many
-# of its internal functions (e.g. lav_model_gradient -> lav_model_grad), and
-# resolving them at the top level would bake in whichever name exists at
-# *install* time. Instead, the bindings below start as NULL and are resolved
-# once per session in .onLoad() (see zzz.R): for each binding, the first
-# alias found in the lavaan namespace wins. Call-time overhead is zero.
-#
-# NOTE: lavaan >= 0.7 also renamed arguments (dot.case -> snake_case), so
-# call sites must avoid argument names that differ across versions; they
-# rely on positional matching instead (the order is stable).
+# Unexported lavaan internals used by INLAvaan. CRAN policy does not permit
+# calling another package's internals with `:::`, so the bindings below
+# start as NULL and are bound once per session in .onLoad() (see zzz.R) via
+# utils::getFromNamespace(). Call-time overhead is zero, and because the
+# lookup runs against whichever lavaan is loaded in the session, upgrading
+# lavaan in place can never leave stale function objects behind (which
+# binding at build/install time could). The names are lavaan >= 0.7-2's own
+# (required in DESCRIPTION); each binding is the lavaan name with a
+# `lavaan___` prefix.
 
 lavaan___lav_model_loglik <- NULL
 lavaan___lav_model_objective <- NULL
-lavaan___lav_model_gradient <- NULL
+lavaan___lav_model_grad <- NULL
 lavaan___lav_model_lambda <- NULL
 lavaan___lav_model_veta <- NULL
 lavaan___lav_model_eeta <- NULL
 lavaan___lav_model_ey <- NULL
-lavaan___lav_mvnorm_loglik_samplestats <- NULL
-lavaan___lav_mvnorm_missing_loglik_samplestats <- NULL
-lavaan___lav_mvnorm_cluster_implied22l <- NULL
 lavaan___lav_model_delta <- NULL
-lavaan___lav_mvnorm_scores_mu_vech_sigma <- NULL
-lavaan___lav_mvnorm_cluster_loglik_samplestats_2l <- NULL
-lavaan___lav_mvnorm_cluster_dlogl_2l_samplestats <- NULL
-lavaan___lav_mvnorm_cluster_missing_loglik_samplestats_2l <- NULL
-lavaan___lav_mvnorm_cluster_missing_dlogl_2l_samplestats <- NULL
-lavaan___lav_data_missing_patterns <- NULL
+lavaan___lav_mvn_loglik_samp <- NULL
+lavaan___lav_mvn_mi_loglik_samp <- NULL
+lavaan___lav_mvn_sc_mu_sigma <- NULL
+lavaan___lav_mvn_cl_implied22l <- NULL
+lavaan___lav_mvn_cl_loglik_samp_2l <- NULL
+lavaan___lav_mvn_cl_dlogl_2l_samp <- NULL
+lavaan___lav_mvn_cl_mi_loglik_samp_2l <- NULL
+lavaan___lav_mvn_cl_mi_dlogl_2l_samp <- NULL
+lavaan___lav_data_mi_patterns <- NULL
 lavaan___lav_inspect_coef <- NULL
 
-# Aliases ordered new (lavaan >= 0.7) first, old (lavaan < 0.7) last, so on
-# new lavaan we bind the real function rather than its deprecated shim.
-lavaan_internal_aliases <- list(
-  lavaan___lav_model_loglik = "lav_model_loglik",
-  lavaan___lav_model_objective = "lav_model_objective",
-  lavaan___lav_model_gradient = c("lav_model_grad", "lav_model_gradient"),
-  lavaan___lav_model_lambda = c("lav_model_lambda", "computeLAMBDA"),
-  lavaan___lav_model_veta = c("lav_model_veta", "computeVETA"),
-  lavaan___lav_model_eeta = c("lav_model_eeta", "computeEETA"),
-  lavaan___lav_model_ey = c("lav_model_ey", "computeEY"),
-  lavaan___lav_mvnorm_loglik_samplestats = c(
-    "lav_mvn_loglik_samp",
-    "lav_mvnorm_loglik_samplestats"
-  ),
-  lavaan___lav_mvnorm_missing_loglik_samplestats = c(
-    "lav_mvn_mi_loglik_samp",
-    "lav_mvnorm_missing_loglik_samplestats"
-  ),
-  lavaan___lav_mvnorm_cluster_implied22l = c(
-    "lav_mvn_cl_implied22l",
-    "lav_mvnorm_cluster_implied22l"
-  ),
-  lavaan___lav_model_delta = c("lav_model_delta", "computeDelta"),
-  lavaan___lav_mvnorm_scores_mu_vech_sigma = c(
-    "lav_mvn_sc_mu_sigma",
-    "lav_mvnorm_scores_mu_vech_sigma"
-  ),
-  lavaan___lav_mvnorm_cluster_loglik_samplestats_2l = c(
-    "lav_mvn_cl_loglik_samp_2l",
-    "lav_mvnorm_cluster_loglik_samplestats_2l"
-  ),
-  lavaan___lav_mvnorm_cluster_dlogl_2l_samplestats = c(
-    "lav_mvn_cl_dlogl_2l_samp",
-    "lav_mvnorm_cluster_dlogl_2l_samplestats"
-  ),
-  lavaan___lav_mvnorm_cluster_missing_loglik_samplestats_2l = c(
-    "lav_mvn_cl_mi_loglik_samp_2l",
-    "lav_mvnorm_cluster_missing_loglik_samplestats_2l"
-  ),
-  lavaan___lav_mvnorm_cluster_missing_dlogl_2l_samplestats = c(
-    "lav_mvn_cl_mi_dlogl_2l_samp",
-    "lav_mvnorm_cluster_missing_dlogl_2l_samplestats"
-  ),
-  lavaan___lav_data_missing_patterns = c(
-    "lav_data_mi_patterns",
-    "lav_data_missing_patterns"
-  ),
-  lavaan___lav_inspect_coef = c("lav_inspect_coef", "lav_object_inspect_coef")
+lavaan_internal_names <- c(
+  "lav_model_loglik",
+  "lav_model_objective",
+  "lav_model_grad",
+  "lav_model_lambda",
+  "lav_model_veta",
+  "lav_model_eeta",
+  "lav_model_ey",
+  "lav_model_delta",
+  "lav_mvn_loglik_samp",
+  "lav_mvn_mi_loglik_samp",
+  "lav_mvn_sc_mu_sigma",
+  "lav_mvn_cl_implied22l",
+  "lav_mvn_cl_loglik_samp_2l",
+  "lav_mvn_cl_dlogl_2l_samp",
+  "lav_mvn_cl_mi_loglik_samp_2l",
+  "lav_mvn_cl_mi_dlogl_2l_samp",
+  "lav_data_mi_patterns",
+  "lav_inspect_coef"
 )
 
 resolve_lavaan_internals <- function(ns) {
   lav_ns <- asNamespace("lavaan")
-  for (binding in names(lavaan_internal_aliases)) {
-    aliases <- lavaan_internal_aliases[[binding]]
-    found <- NULL
-    for (alias in aliases) {
-      if (exists(alias, envir = lav_ns, inherits = FALSE)) {
-        found <- get(alias, envir = lav_ns, inherits = FALSE)
-        break
-      }
-    }
-    if (is.null(found)) {
+  for (name in lavaan_internal_names) {
+    if (!exists(name, envir = lav_ns, inherits = FALSE)) {
       # nocov start
       stop(
         "INLAvaan needs the internal lavaan function ",
-        paste(sQuote(aliases), collapse = " or "),
-        ", but neither exists in lavaan ",
+        sQuote(name),
+        ", which does not exist in lavaan ",
         as.character(utils::packageVersion("lavaan")),
         ". Please report this at https://github.com/haziqj/INLAvaan/issues.",
         call. = FALSE
       )
       # nocov end
     }
-    assign(binding, found, envir = ns)
+    assign(
+      paste0("lavaan___", name),
+      utils::getFromNamespace(name, "lavaan"),
+      envir = ns
+    )
   }
   invisible(NULL)
 }
