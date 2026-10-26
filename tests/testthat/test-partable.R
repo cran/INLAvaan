@@ -314,3 +314,120 @@ test_that("inlavaanify_partable integrates with lavaan / blavaan objects", {
   expect_equal(length(res$names), nrow(pt))
   expect_true(all(nzchar(res$names)))
 })
+
+test_that("Parameter names follow coef()", {
+  dat <- lavaan::HolzingerSwineford1939
+  dat$grp <- rep_len(1:12, nrow(dat))
+  # Labels ending in g1, groups 10 and above, and a := row
+  fit <- suppressWarnings(lavaan::cfa(
+    "visual =~ x1 + lag1*x2 + x3\n big1 := 2*lag1",
+    dat,
+    group = "grp",
+    ceq.simple = TRUE,
+    do.fit = FALSE
+  ))
+  pt <- inlavaanify_partable(
+    fit@ParTable,
+    lavdata = fit@Data,
+    lavoptions = fit@Options
+  )
+  free <- pt$free > 0 & !duplicated(pt$free)
+  expect_setequal(pt$names[free], names(lavaan::coef(fit)))
+  expect_true(all(c("big1", "visual=~x3.g10", "visual=~x3.g12") %in% pt$names))
+
+  fit <- lavaan::sem(
+    "level: 1\n fw =~ y1 + ab1*y2 + y3\n level: 2\n fb =~ y1 + y2 + y3",
+    lavaan::Demo.twolevel,
+    cluster = "cluster",
+    do.fit = FALSE
+  )
+  pt <- inlavaanify_partable(
+    fit@ParTable,
+    lavdata = fit@Data,
+    lavoptions = fit@Options
+  )
+  free <- pt$free > 0 & !duplicated(pt$free)
+  expect_identical(pt$names[free], names(lavaan::coef(fit)))
+
+  # Named levels suffix with the level name
+  fit <- lavaan::sem(
+    "level: within\n fw =~ y1 + ab1*y2 + y3
+     level: between\n fb =~ y1 + y2 + y3",
+    lavaan::Demo.twolevel,
+    cluster = "cluster",
+    do.fit = FALSE
+  )
+  pt <- inlavaanify_partable(
+    fit@ParTable,
+    lavdata = fit@Data,
+    lavoptions = fit@Options
+  )
+  free <- pt$free > 0 & !duplicated(pt$free)
+  expect_identical(pt$names[free], names(lavaan::coef(fit)))
+  expect_true("fb=~y3.lbetween" %in% pt$names)
+  expect_identical(partable_level_labels(pt), c("within", "between"))
+})
+
+test_that("A := parameter cannot reuse a parameter label", {
+  expect_error(
+    acfa(
+      "visual =~ x1 + a*x2 + x3\n a := 2",
+      lavaan::HolzingerSwineford1939,
+      verbose = FALSE,
+      test = "none"
+    ),
+    "reuses a parameter label"
+  )
+})
+
+test_that("Multigroup := parameters can be plotted by name", {
+  skip_on_cran()
+  fit <- acfa(
+    "visual =~ x1 + c(a1, a2)*x2 + x3\n d := a1 - a2",
+    lavaan::HolzingerSwineford1939,
+    group = "school",
+    verbose = FALSE,
+    nsamp = 10,
+    test = "none"
+  )
+  expect_true("d" %in% rownames(get_inlavaan_internal(fit)$summary))
+  pdf(NULL)
+  on.exit(dev.off())
+  expect_no_error(plot(fit, params = "d"))
+})
+
+test_that("Multigroup two-level models give an error", {
+  dat <- lavaan::Demo.twolevel
+  dat$g <- ifelse(dat$cluster %% 2 == 0, "a", "b")
+  blk <- "level: 1\n fw =~ y1 + y2 + y3\n level: 2\n fb =~ y1 + y2 + y3\n"
+  mod <- paste0("group: a\n", blk, "group: b\n", blk)
+  expect_error(
+    asem(mod, dat, cluster = "cluster", group = "g", verbose = FALSE),
+    "Multigroup two-level"
+  )
+})
+
+test_that("Covariances start from their correlation", {
+  # With fixed.x = FALSE lavaan starts x2 ~~ x3 at its sample covariance, 1.78,
+  # whose atanh() is NaN
+  fit0 <- lavaan::sem(
+    "y1 ~ x1 + x2 + x3",
+    lavaan::PoliticalDemocracy,
+    fixed.x = FALSE,
+    do.fit = FALSE
+  )
+  pt <- inlavaanify_partable(
+    fit0@ParTable,
+    priors_for(),
+    fit0@Data,
+    fit0@Options
+  )
+  i <- which(pt$lhs == "x2" & pt$op == "~~" & pt$rhs == "x3")
+  v2 <- which(pt$lhs == "x2" & pt$op == "~~" & pt$rhs == "x2")
+  v3 <- which(pt$lhs == "x3" & pt$op == "~~" & pt$rhs == "x3")
+  expect_equal(
+    tanh(pt$parstart[i]),
+    pt$start[i] / sqrt(pt$start[v2] * pt$start[v3])
+  )
+  expect_true(all(is.finite(pt$parstart[pt$free > 0])))
+})

@@ -46,7 +46,8 @@ compute_loglik_sat <- function(object, lavsamplestats, lavdata) {
 }
 
 # Per-sample deviance chi-square:  chisq_s = 2 * (loglik_sat - loglik(x_s))
-# This equals N * F_ML(x_s).
+# This equals N * F_ML(x_s), so both logliks profile the saturated means of a
+# model without a mean structure.
 compute_chisq_dev <- function(
   object,
   x_samp,
@@ -54,9 +55,12 @@ compute_chisq_dev <- function(
   lavsamplestats,
   lavdata,
   lavoptions,
-  lavcache
+  lavcache,
+  loglik_sat = NULL
 ) {
-  loglik_sat <- compute_loglik_sat(object, lavsamplestats, lavdata)
+  if (is.null(loglik_sat)) {
+    loglik_sat <- compute_loglik_sat(object, lavsamplestats, lavdata)
+  }
   vapply(
     seq_len(nrow(x_samp)),
     function(i) {
@@ -66,7 +70,8 @@ compute_chisq_dev <- function(
         lavsamplestats,
         lavdata,
         lavoptions,
-        lavcache
+        lavcache,
+        marginalise_means = FALSE
       )
       2 * (loglik_sat - ll_i)
     },
@@ -87,7 +92,14 @@ compute_adjBGammaHat <- function(BGammaHat, p, df) {
 compute_BMc <- function(nonc, N) exp(-0.5 * nonc / N)
 
 # Incremental fit indices (vectorised) ----------------------------------------
-compute_BCFI <- function(nonc, nonc_null) 1 - nonc / nonc_null
+compute_BCFI <- function(nonc, nonc_null) {
+  out <- 1 - nonc / nonc_null
+  # A baseline with no noncentrality leaves nothing to scale by. Such a draw
+  # takes lavaan's CFI convention: 1 when the model has none either, else 0.
+  zero <- !(nonc_null > 0)
+  out[zero] <- as.numeric(nonc[zero] <= 0)
+  out
+}
 compute_BTLI <- function(adj_dev, df, adj_dev_null, df_null) {
   tli_null <- adj_dev_null / df_null
   denom <- tli_null - 1
@@ -98,6 +110,45 @@ compute_BTLI <- function(adj_dev, df, adj_dev_null, df_null) {
 }
 compute_BNFI <- function(adj_dev, adj_dev_null) {
   (adj_dev_null - adj_dev) / adj_dev_null
+}
+
+# Number of sample moments, counted as lavaan counts them for the degrees of
+# freedom: per group and level, without the moments of fixed exogenous
+# covariates or of composite indicator (co)variances fixed at their sample
+# values. lavaan's own count removes the fixed composite rows of every group
+# from each group, so a fit with composites is counted one group at a time on
+# single-group parameter tables. That stays right if lavaan comes to count them
+# per group. lavaan also removes an indicator (co)variance that the user fixes
+# at a value, which is a constraint the data test, so those count again.
+# Composites are single-level, so their blocks are the groups.
+count_sample_moments <- function(pt) {
+  if (!any(pt$op == "<~") || length(unique(pt$level)) > 1L) {
+    return(lavaan::lav_partable_ndat(pt))
+  }
+  n_row <- length(pt$lhs)
+  blocks <- sort(unique(pt$block[pt$block > 0L]))
+  per_group <- vapply(
+    blocks,
+    function(b) {
+      in_b <- pt$block == b
+      pt_b <- lapply(pt, function(col) {
+        if (length(col) == n_row) col[in_b] else col
+      })
+      pt_b$block[] <- 1L
+      if (!is.null(pt_b$group)) {
+        pt_b$group[] <- 1L
+      }
+      ind <- unique(pt_b$rhs[pt_b$op == "<~"])
+      user_fixed <- pt_b$op == "~~" &
+        pt_b$lhs %in% ind &
+        pt_b$rhs %in% ind &
+        pt_b$free == 0L &
+        !is.na(pt_b$ustart)
+      lavaan::lav_partable_ndat(pt_b) + sum(user_fixed)
+    },
+    numeric(1)
+  )
+  sum(per_group)
 }
 
 # Reconstruct lavoptions suitable for inlav_model_loglik() from the INLAvaan
@@ -122,7 +173,8 @@ compute_rescaled_quantities <- function(
   lavoptions,
   lavcache,
   p,
-  rescale
+  rescale,
+  loglik_sat = NULL
 ) {
   N <- lavsamplestats@ntotal
   Ngr <- lavdata@ngroups
@@ -135,7 +187,8 @@ compute_rescaled_quantities <- function(
     lavsamplestats,
     lavdata,
     lavoptions,
-    lavcache
+    lavcache,
+    loglik_sat
   )
 
   if (rescale == "devM") {
@@ -268,6 +321,13 @@ resolve_baseline_model <- function(object, baseline.model, nsamp = NULL) {
 #' Compute posterior distributions of Bayesian fit indices for an INLAvaan
 #' model, analogous to [blavaan::blavFitIndices()].
 #'
+#' For a random-slope model, which has no saturated model, the chi-square and
+#' the number of sample moments come from the unrestricted random-coefficient
+#' model with the same random-effects design, fitted by maximum likelihood.
+#' This reference is INLAvaan's own construction. It is available on the
+#' closed-form route only, for models without between-only outcomes, and
+#' needs enough clusters for its parameters.
+#'
 #' @param object An object of class [INLAvaan].
 #' @param baseline.model The baseline (null) model that the incremental fit
 #'   indices (BCFI, BTLI, BNFI) are scaled against. `NULL` (default) fits the
@@ -337,6 +397,13 @@ bfit_indices <- function(
   lavsamplestats <- int$lavsamplestats
   lavdata <- int$lavdata
 
+  # A random-slope fit has no saturated model, so it is scaled against the
+  # unrestricted random-coefficient model instead (see rs_baseline_fit()).
+  rs_ref <- NULL
+  if (has_random_slopes(lavmodel)) {
+    rs_ref <- rs_baseline_fit(object)
+  }
+
   nsamp <- nsamp %||% int$nsamp %||% 500L
   method <- if (isTRUE(samp_copula)) int$marginal_method else "sampling"
   samp <- sample_params(
@@ -369,9 +436,12 @@ bfit_indices <- function(
   Ngr <- lavdata@ngroups
   nvar <- lavmodel@nvar
   # Number of sample moments, counted as lavaan counts them for the model's
-  # degrees of freedom: per group and level, without the moments of fixed
-  # exogenous covariates
-  p <- lavaan::lav_partable_ndat(object@ParTable)
+  # degrees of freedom (see count_sample_moments()).
+  p <- if (is.null(rs_ref)) {
+    count_sample_moments(object@ParTable)
+  } else {
+    rs_ref$npar
+  }
 
   rq <- compute_rescaled_quantities(
     object,
@@ -382,7 +452,8 @@ bfit_indices <- function(
     lavoptions,
     lavcache,
     p,
-    rescale
+    rescale,
+    rs_ref$loglik
   )
 
   indices <- list()
@@ -415,6 +486,8 @@ bfit_indices <- function(
     x_samp_null <- samp_null$x_samp
     n_use <- min(nrow(x_samp), nrow(x_samp_null))
 
+    # The baseline's own moment count, which is larger than the model's when the
+    # model fixes composite indicator (co)variances at their sample values.
     rq_null <- compute_rescaled_quantities(
       baseline.model,
       x_samp_null[seq_len(n_use), , drop = FALSE],
@@ -423,8 +496,9 @@ bfit_indices <- function(
       bint$lavdata,
       reconstruct_lavoptions(baseline.model),
       baseline.model@Cache,
-      p,
-      rescale
+      if (is.null(rs_ref)) count_sample_moments(baseline.model@ParTable) else p,
+      rescale,
+      rs_ref$loglik
     )
 
     adj_dev_use <- rq$adj_dev[seq_len(n_use)]
@@ -553,11 +627,32 @@ inlav_fit_measures <- function(
     baseline.model <- FALSE
   }
 
-  # Bayesian fit indices (BRMSEA, BGammaHat, etc.)
-  bfi <- tryCatch(
-    bfit_indices(object, baseline.model, rescale),
-    error = function(e) NULL
+  # Bayesian fit indices (BRMSEA, BGammaHat, etc.), only when wanted. A
+  # random-slope fit that cannot have them says why when one is asked for by
+  # name.
+  bfit_names <- c(
+    "BRMSEA",
+    "BGammaHat",
+    "adjBGammaHat",
+    "BMc",
+    "BCFI",
+    "BTLI",
+    "BNFI"
   )
+  named_bfit <- !identical(fit.measures, "all") &&
+    any(bfit_names %in% fit.measures)
+  bfi <- NULL
+  if (identical(fit.measures, "all") || named_bfit) {
+    bfi <- tryCatch(
+      bfit_indices(object, baseline.model, rescale),
+      error = function(e) {
+        if (inherits(e, "inlavaan_rs_bfit") && named_bfit) {
+          stop(e)
+        }
+        NULL
+      }
+    )
+  }
   if (!is.null(bfi)) {
     for (nm in names(bfi$indices)) {
       out[nm] <- mean(bfi$indices[[nm]], na.rm = TRUE)
@@ -620,6 +715,16 @@ inlav_fit_measures <- function(
   if (!identical(fit.measures, "all")) {
     idx <- which(names(out) %in% fit.measures)
     if (length(idx) == 0L) {
+      if (has_random_slopes(int$lavmodel)) {
+        cli_abort(
+          c(
+            "None of {.val {fit.measures}} is available for a random-slope
+             model.",
+            "i" = "Available: {.val {names(out)}}."
+          ),
+          class = "inlavaan_rs_fitmeasures"
+        )
+      }
       cli_abort("No matching fit measures found.")
     }
     out <- out[idx]

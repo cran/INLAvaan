@@ -35,7 +35,30 @@ plot.inlavaan_internal <- function(
   if (identical(params, "all")) {
     param_names <- all_names
   } else {
+    # A parameter held equal to another goes by either name, as in coef()
+    pt <- x$partable
+    is_free <- pt$free > 0
+    owner <- pt$names[is_free][match(pt$free[is_free], pt$free[is_free])]
+    alias <- setNames(owner, pt$names[is_free])
+    hit <- params %in% names(alias) & !params %in% all_names
+    params <- unique(replace(params, hit, alias[params[hit]]))
+
     bad <- setdiff(params, all_names)
+    no_dens <- intersect(bad, rownames(x$summary))
+    if (length(no_dens) > 0) {
+      cli_abort(c(
+        "No posterior density to plot for {.code {no_dens}}.",
+        "i" = "Its draws are constant or could not be computed."
+      ))
+    }
+    # Fixed rows, such as a marker loading or weight
+    not_free <- intersect(bad, pt$names[pt$free == 0L])
+    if (length(not_free) > 0) {
+      cli_abort(c(
+        "No posterior density to plot for {.code {not_free}}.",
+        "i" = "{cli::qty(length(not_free))}{?It is/They are} fixed."
+      ))
+    }
     if (length(bad) > 0) {
       # nocov start
       stop(
@@ -206,8 +229,9 @@ plot.inlavaan_internal <- function(
 #' @param type Character. One of \code{"marg_pdf"} (default; posterior marginal
 #'   densities), \code{"sn_fit"} (skew-normal fit diagnostic on natural scale),
 #'   or \code{"sn_fit_log"} (same on log scale).
-#' @param params Character vector of parameter names to plot, or \code{"all"}
-#'   (default) to plot all free parameters.
+#' @param params Character vector of parameter names to plot, as in
+#'   \code{coef()} or \code{:=} labels, or \code{"all"} (default) to plot all
+#'   parameters.
 #' @param nrow,ncol Integer. Number of rows/columns for the facet grid when
 #'   \code{use_ggplot = TRUE}. If \code{NULL} (default), layout is chosen
 #'   automatically.

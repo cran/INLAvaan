@@ -25,6 +25,13 @@
 #' factor scores \eqn{\boldsymbol\eta \mid \mathbf{y},\boldsymbol\theta}
 #' conditional on observed data.
 #'
+#' For a random-slope model, each draw takes the level-2 variables, slopes
+#' included, first and puts the drawn slopes into their level-1 paths, and
+#' `type = "implied"` gives the moments averaged over the covariates (see
+#' [fitted()]). As for other models, the covariates of a latent or observed
+#' draw come from their fitted moments, whereas [simulate()] keeps the
+#' observed covariates of a random-slope model.
+#'
 #' @param object An object of class [INLAvaan] (or `inlavaan_internal`).
 #' @param type Character string specifying what to sample:
 #'   \describe{
@@ -76,7 +83,13 @@
 #'
 #' @example inst/examples/ex-sampling.R
 #' @export
-setGeneric("sampling", function(object, ...) standardGeneric("sampling"))
+# The default hands anything that is not an S4 INLAvaan object to the S3
+# methods, so the internal list dispatches too.
+setGeneric(
+  "sampling",
+  function(object, ...) standardGeneric("sampling"),
+  useAsDefault = function(object, ...) UseMethod("sampling")
+)
 
 #' @name sampling
 #' @rdname sampling
@@ -123,6 +136,7 @@ sampling.inlavaan_internal <- function(
     nsamp = nsamp,
     samp_copula = samp_copula,
     prior = prior,
+    meanstructure = isTRUE(object$lavmodel@meanstructure),
     silent = silent,
     ...
   )
@@ -205,15 +219,15 @@ sample_params_prior <- function(int, nsamp) {
     )
   }
 
-  # Apply equality constraints if present
+  # Apply equality constraints if present, keeping theta_samp packed
+  theta_full <- theta_samp
   if (lavmodel@ceq.simple.only) {
-    # nocov start
     K <- lavmodel@ceq.simple.K
-    theta_samp <- t(apply(theta_samp, 1, function(p) as.numeric(K %*% p)))
-  } # nocov end
+    theta_full <- t(apply(theta_samp, 1, function(p) as.numeric(K %*% p)))
+  }
 
   # Map theta → lavaan x-space (handles covariance = cor * sqrt(var1 * var2))
-  x_samp <- t(apply(theta_samp, 1, pars_to_x, pt = pt))
+  x_samp <- t(apply(theta_full, 1, pars_to_x, pt = pt))
 
   list(theta_samp = theta_samp, x_samp = x_samp)
 }
@@ -231,6 +245,59 @@ chol_cov_block <- function(S, strict = FALSE) {
   }
 }
 
+# Root of the residual covariance Theta, which may be singular: an observed
+# outcome keeps its residual variance in Psi of its dummy latent variable, so
+# its row of Theta is zero. Theta is singular by design when it holds composite
+# indicators (see composite_as_lisrel()). With strict = TRUE a Theta with a
+# negative eigenvalue throws, so that prior rejection sampling rejects the draw.
+theta_root <- function(Theta, strict = FALSE, singular = FALSE) {
+  if (strict) {
+    d <- eigen(Theta, symmetric = TRUE, only.values = TRUE)$values
+    if (min(d) < -sqrt(.Machine$double.eps) * max(d, 0)) {
+      stop("Theta is not positive semi-definite.")
+    }
+  }
+  psd_root(Theta, singular = singular)
+}
+
+# Whether the model-implied covariance matrix of every block is positive
+# definite at x. This is the screen that simulate() applies to its draws.
+implied_cov_is_pd <- function(x, int) {
+  lavmodel <- int$lavmodel
+  implied <- tryCatch(
+    lavaan::lav_model_implied(
+      lavaan::lav_model_set_parameters(lavmodel, as.numeric(x))
+    ),
+    error = function(e) NULL
+  )
+  if (is.null(implied)) {
+    return(FALSE) # nocov
+  }
+  for (b in seq_len(lavmodel@nblocks)) {
+    S <- implied_block_moments(implied, b, lavmodel, int$lavsamplestats)$cov
+    if (!all(is.finite(S))) {
+      return(FALSE) # nocov
+    }
+    eigs <- eigen(S, symmetric = TRUE, only.values = TRUE)$values
+    if (any(eigs < 1e-10)) {
+      return(FALSE)
+    }
+  }
+  TRUE
+}
+
+# Names of a block's latent and observed draws. Under conditional.x the
+# covariates are not in the model matrices (their effects are in gamma), so
+# they are drawn from their fixed moments and appended, as the dummy variables
+# of other fits carry them.
+block_lv_names <- function(glist) {
+  c(colnames(glist$psi), colnames(glist$gamma))
+}
+
+block_ov_names <- function(glist) {
+  c(rownames(glist$lambda), colnames(glist$gamma))
+}
+
 draw_latent_block <- function(glist, strict = FALSE) {
   Psi <- glist$psi
   B <- glist$beta
@@ -242,12 +309,23 @@ draw_latent_block <- function(glist, strict = FALSE) {
   }
   IminB_inv <- solve(IminB)
 
+  x <- NULL
+  if (!is.null(glist$gamma)) {
+    x <- as.numeric(glist$mean.x) +
+      as.numeric(
+        chol_cov_block(glist$cov.x, strict) %*%
+          stats::rnorm(ncol(glist$gamma))
+      )
+    alpha <- alpha + glist$gamma %*% x
+  }
+
   mu_eta <- as.numeric(IminB_inv %*% alpha)
   Phi <- IminB_inv %*% Psi %*% t(IminB_inv)
   chol_Phi <- chol_cov_block(Phi, strict)
 
   eta <- mu_eta + as.numeric(chol_Phi %*% stats::rnorm(length(mu_eta)))
-  names(eta) <- colnames(Psi)
+  eta <- c(eta, x)
+  names(eta) <- block_lv_names(glist)
   eta
 }
 
@@ -263,6 +341,8 @@ sample_latent_from_model <- function(x_row, lavmodel, strict = FALSE) {
 
 # ---- Internal: generate y from model given eta ------------------------------
 
+# eta carries the drawn covariates after the latent variables under
+# conditional.x (see draw_latent_block()), and they pass through to y
 draw_observed_block <- function(glist, eta, strict = FALSE) {
   Lambda <- glist$lambda
   Theta <- glist$theta
@@ -272,10 +352,16 @@ draw_observed_block <- function(glist, eta, strict = FALSE) {
     nu <- rep(0, nrow(Lambda))
   }
 
-  mu_y <- as.numeric(Lambda %*% eta + nu)
-  chol_Theta <- chol_cov_block(Theta, strict)
-  y <- mu_y + as.numeric(chol_Theta %*% stats::rnorm(length(mu_y)))
-  names(y) <- rownames(Lambda)
+  lv <- seq_len(ncol(Lambda))
+  mu_y <- as.numeric(Lambda %*% eta[lv] + nu)
+  root_Theta <- theta_root(
+    Theta,
+    strict,
+    singular = !is.null(attr(glist, "composite_idx"))
+  )
+  y <- mu_y + as.numeric(root_Theta %*% stats::rnorm(length(mu_y)))
+  y <- c(y, unname(eta[-lv]))
+  names(y) <- block_ov_names(glist)
   y
 }
 
@@ -309,10 +395,23 @@ compute_implied_moments <- function(x_row, lavmodel, meanstructure = FALSE) {
     IminB <- if (is.null(B)) diag(nrow(Psi)) else (diag(nrow(B)) - B)
     IminB_inv <- solve(IminB)
 
-    # Sigma_y = Lambda (I-B)^{-1} Psi [(I-B)^{-1}]' Lambda' + Theta
+    # Sigma_y = Lambda (I-B)^{-1} Psi [(I-B)^{-1}]' Lambda' + Theta. Under
+    # conditional.x the covariates enter through gamma, with their fixed
+    # moments, and the joint matrix appends their block.
     front <- Lambda %*% IminB_inv
+    Gamma <- glist$gamma
+    if (!is.null(Gamma)) {
+      Psi <- Psi + Gamma %*% glist$cov.x %*% t(Gamma)
+    }
     Sigma_y <- front %*% Psi %*% t(front) + Theta
-    rownames(Sigma_y) <- colnames(Sigma_y) <- rownames(Lambda)
+    if (!is.null(Gamma)) {
+      Sigma_yx <- front %*% Gamma %*% glist$cov.x
+      Sigma_y <- rbind(
+        cbind(Sigma_y, Sigma_yx),
+        cbind(t(Sigma_yx), glist$cov.x)
+      )
+    }
+    rownames(Sigma_y) <- colnames(Sigma_y) <- block_ov_names(glist)
 
     res <- list(cov = Sigma_y)
 
@@ -324,8 +423,13 @@ compute_implied_moments <- function(x_row, lavmodel, meanstructure = FALSE) {
       if (is.null(nu)) {
         nu <- rep(0, nrow(Lambda))
       }
-      mu_y <- as.numeric(Lambda %*% IminB_inv %*% alpha + nu)
-      names(mu_y) <- rownames(Lambda)
+      mu_x <- NULL
+      if (!is.null(Gamma)) {
+        mu_x <- as.numeric(glist$mean.x)
+        alpha <- alpha + Gamma %*% mu_x
+      }
+      mu_y <- c(as.numeric(Lambda %*% IminB_inv %*% alpha + nu), mu_x)
+      names(mu_y) <- block_ov_names(glist)
       res$mean <- mu_y
     } # nocov end
 
@@ -359,19 +463,20 @@ get_block_param_matrix <- function(x_row, lavmodel) {
       lavmodel_x@dimNames[mm]
     )
     names(glist) <- names(lavmodel_x@GLIST)[mm]
-    glist
+    composite_as_lisrel(glist)
   })
 }
 
 # Latent variable names across levels, flattened into a single vector. A
-# level-2 name takes the ".l2" suffix of the coefficient labels, but only when
-# the same latent variable also exists at level 1.
-ml_latent_names <- function(name_list) {
+# level-2 name takes the level suffix of the coefficient labels (".l2", or
+# ".lbetween" for a named level), but only when the same latent variable also
+# exists at level 1.
+ml_latent_names <- function(name_list, labels = seq_along(name_list)) {
   out <- name_list
   for (l in seq_along(name_list)[-1L]) {
     seen <- unlist(name_list[seq_len(l - 1L)], use.names = FALSE)
     dup <- out[[l]] %in% seen
-    out[[l]][dup] <- paste0(out[[l]][dup], ".l", l)
+    out[[l]][dup] <- paste0(out[[l]][dup], ".l", labels[l])
   }
   unlist(out, use.names = FALSE)
 }
@@ -385,7 +490,9 @@ sample_generative_ml <- function(
   lavmodel,
   lavdata,
   need_obs = TRUE,
-  strict = FALSE
+  strict = FALSE,
+  level_labels = seq_len(lavdata@nlevels),
+  rs_paths = NULL
 ) {
   GLIST <- get_block_param_matrix(x_row, lavmodel)
   nG <- lavmodel@ngroups
@@ -399,8 +506,22 @@ sample_generative_ml <- function(
     names(y_g) <- ov_names
     eta_g <- vector("list", nlevels)
 
-    for (l in seq_len(nlevels)) {
+    # A random slope is a level-2 latent variable that multiplies a level-1
+    # path, so the between level is drawn first and each drawn slope is put
+    # in its level-1 carrier cell.
+    level_order <- if (is.null(rs_paths)) {
+      seq_len(nlevels)
+    } else {
+      rev(seq_len(nlevels))
+    }
+    for (l in level_order) {
       glist <- GLIST[[(g - 1) * nlevels + l]]
+      if (!is.null(rs_paths) && l == 1L) {
+        for (p in seq_len(nrow(rs_paths))) {
+          glist$beta[rs_paths$lhs[p], rs_paths$rhs[p]] <-
+            eta_g[[2L]][[rs_paths$rv[p]]]
+        }
+      }
       eta_g[[l]] <- draw_latent_block(glist, strict = strict)
       if (need_obs) {
         y_l <- draw_observed_block(glist, eta_g[[l]], strict = strict)
@@ -410,7 +531,7 @@ sample_generative_ml <- function(
 
     eta_list[[g]] <- stats::setNames(
       unlist(eta_g, use.names = FALSE),
-      ml_latent_names(lapply(eta_g, names))
+      ml_latent_names(lapply(eta_g, names), level_labels)
     )
     y_list[[g]] <- y_g
   }
@@ -430,9 +551,20 @@ sample_generative_ml <- function(
 
 # Model-implied moments of a two-level model, one within/between pair per
 # group, named and ordered as lavInspect(object, "implied") reports them.
-compute_implied_moments_ml <- function(x_row, lavmodel, lavdata) {
+compute_implied_moments_ml <- function(
+  x_row,
+  lavmodel,
+  lavdata,
+  rs_info = NULL
+) {
   lavmodel_x <- lavaan::lav_model_set_parameters(lavmodel, x_row)
-  implied <- lavaan::lav_model_implied(lavmodel_x)
+  # A random-slope model's moments are averaged over the covariates, since
+  # lavaan's own leave the slopes out (see rs_avg_glist()).
+  implied <- if (is.null(rs_info)) {
+    lavaan::lav_model_implied(lavmodel_x)
+  } else {
+    rs_avg_implied(lavmodel_x, rs_info)
+  }
   nG <- lavmodel@ngroups
   nlevels <- lavdata@nlevels
   out_list <- vector("list", nG)
@@ -470,7 +602,12 @@ sampling_generative_ml <- function(int, samp, type, nsamp) {
   implied_list <- NULL
   if (type == "implied" || type == "all") {
     implied_list <- lapply(seq_len(nsamp), function(i) {
-      compute_implied_moments_ml(samp$x_samp[i, ], lavmodel, lavdata)
+      compute_implied_moments_ml(
+        samp$x_samp[i, ],
+        lavmodel,
+        lavdata,
+        rs_info_of(int)
+      )
     })
     if (type == "implied") {
       return(implied_list)
@@ -478,12 +615,15 @@ sampling_generative_ml <- function(int, samp, type, nsamp) {
   }
 
   need_obs <- type %in% c("observed", "all")
+  level_labels <- partable_level_labels(int$partable)
   draws <- lapply(seq_len(nsamp), function(i) {
     sample_generative_ml(
       samp$x_samp[i, ],
       lavmodel,
       lavdata,
-      need_obs = need_obs
+      need_obs = need_obs,
+      rs_paths = rs_info_of(int)$path.tab,
+      level_labels = level_labels
     )
   })
 
@@ -512,7 +652,8 @@ sampling_generative_ml <- function(int, samp, type, nsamp) {
 # When prior = TRUE and we need latent/observed draws, parameter vectors that
 # produce non-positive-definite model-implied covariance matrices are rejected
 # and redrawn.  This preserves the exact prior distribution rather than silently
-# projecting non-PD matrices to PD space via make_pd().
+# projecting non-PD matrices to PD space via make_pd(). The draws themselves
+# also need a positive definite Phi and a positive semi-definite Theta.
 
 sampling_prior_generative <- function(
   int,
@@ -535,7 +676,12 @@ sampling_prior_generative <- function(
     colnames(samp$x_samp) <- xnames
     return(lapply(seq_len(nsamp), function(i) {
       if (two_level) {
-        compute_implied_moments_ml(samp$x_samp[i, ], lavmodel, lavdata)
+        compute_implied_moments_ml(
+          samp$x_samp[i, ],
+          lavmodel,
+          lavdata,
+          rs_info_of(int)
+        )
       } else {
         compute_implied_moments(samp$x_samp[i, ], lavmodel, meanstructure)
       }
@@ -548,15 +694,21 @@ sampling_prior_generative <- function(
   # Pre-compute dimensions from a single draw
   samp0 <- sample_params_prior(int, 1L)
   if (two_level) {
-    draw0 <- sample_generative_ml(samp0$x_samp[1, ], lavmodel, lavdata)
+    draw0 <- sample_generative_ml(
+      samp0$x_samp[1, ],
+      lavmodel,
+      lavdata,
+      rs_paths = rs_info_of(int)$path.tab,
+      level_labels = partable_level_labels(pt)
+    )
     eta_cn <- names(draw0$latent)
     y_cn <- names(draw0$observed)
   } else {
     GLIST0 <- get_SEM_param_matrix(samp0$x_samp[1, ], "all", lavmodel)
-    nlv <- ncol(GLIST0[[1]]$psi)
-    nobs <- nrow(GLIST0[[1]]$lambda)
-    lv_names <- colnames(GLIST0[[1]]$psi)
-    ov_names <- rownames(GLIST0[[1]]$lambda)
+    lv_names <- block_lv_names(GLIST0[[1]])
+    ov_names <- block_ov_names(GLIST0[[1]])
+    nlv <- length(lv_names)
+    nobs <- length(ov_names)
 
     # Column names for output matrices
     if (nG == 1L) {
@@ -599,6 +751,9 @@ sampling_prior_generative <- function(
       }
 
       x1 <- samp_batch$x_samp[i, ]
+      if (!implied_cov_is_pd(x1, int)) {
+        next
+      }
 
       # Try the generative draw (strict = TRUE: no make_pd fallback). The
       # two-level draw already returns both levels in one flat vector.
@@ -609,7 +764,9 @@ sampling_prior_generative <- function(
             lavmodel,
             lavdata,
             need_obs = need_obs,
-            strict = TRUE
+            strict = TRUE,
+            rs_paths = rs_info_of(int)$path.tab,
+            level_labels = partable_level_labels(pt)
           ),
           error = function(e) NULL
         )
@@ -654,7 +811,7 @@ sampling_prior_generative <- function(
 
       if (need_implied) {
         implied_list[[collected]] <- if (two_level) {
-          compute_implied_moments_ml(x1, lavmodel, lavdata) # nocov
+          compute_implied_moments_ml(x1, lavmodel, lavdata, rs_info_of(int)) # nocov
         } else {
           compute_implied_moments(x1, lavmodel, meanstructure)
         }
@@ -669,7 +826,7 @@ sampling_prior_generative <- function(
     # nocov start
     rej_pct <- round(100 * rejected / attempts, 1)
     cli_inform(
-      "Prior sampling: {rejected} of {attempts} draw{?s} ({rej_pct}%) rejected (non-PD model-implied covariance)."
+      "Prior sampling: {rejected} of {attempts} draw{?s} ({rej_pct}%) rejected (a latent, residual or model-implied covariance not positive definite)."
     )
   } # nocov end
 
@@ -775,10 +932,10 @@ sampling_impl <- function(
   # Pre-compute dimensions from the first draw
   nG <- lavmodel@ngroups
   GLIST0 <- get_SEM_param_matrix(samp$x_samp[1, ], "all", lavmodel)
-  nlv <- ncol(GLIST0[[1]]$psi)
-  nobs <- nrow(GLIST0[[1]]$lambda)
-  lv_names <- colnames(GLIST0[[1]]$psi)
-  ov_names <- rownames(GLIST0[[1]]$lambda)
+  lv_names <- block_lv_names(GLIST0[[1]])
+  ov_names <- block_ov_names(GLIST0[[1]])
+  nlv <- length(lv_names)
+  nobs <- length(ov_names)
 
   # Step 2: draw latent variables from model-implied distribution
   if (nG == 1L) {
@@ -869,12 +1026,12 @@ sampling_impl <- function(
     # estimated-nu draws do automatically when a mean structure exists
     if (marginalised_means_active(lavmodel)) {
       n_fit <- nrow(int$lavdata@X[[1L]])
+      x_idx <- int$lavsamplestats@x.idx[[1L]]
       for (i in seq_len(nrow(y_mat))) {
         Sg <- compute_implied_moments(samp$x_samp[i, ], lavmodel)$cov
-        ch <- tryCatch(chol(Sg), error = function(e) NULL) # nocov
-        if (!is.null(ch)) {
-          y_mat[i, ] <- y_mat[i, ] +
-            as.numeric(crossprod(ch, rnorm(ncol(y_mat)))) / sqrt(n_fit)
+        shift <- draw_marginalised_mean_shift(Sg, x_idx, n_fit)
+        if (!is.null(shift)) {
+          y_mat[i, ] <- y_mat[i, ] + shift
         }
       }
     }
@@ -892,4 +1049,9 @@ sampling_impl <- function(
     observed = y_mat,
     implied = implied_list
   )
+}
+
+# The random-slope description of a fit, or NULL without random slopes
+rs_info_of <- function(int) {
+  if (has_random_slopes(int$lavmodel)) int$lavcache[[1L]]$rs$info
 }

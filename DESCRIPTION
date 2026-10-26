@@ -1,7 +1,7 @@
 Type: Package
 Package: INLAvaan
 Title: Approximate Bayesian Latent Variable Analysis
-Version: 0.3.2
+Version: 0.3.3
 Authors@R: c(
     person("Haziq", "Jamil", , "haziq.jamil@gmail.com", role = c("aut", "cre", "cph"),
            comment = c(ORCID = "0000-0003-3298-1010")),
@@ -34,7 +34,7 @@ Config/roxygen2/version: 8.1.0
 Config/testthat/edition: 3
 Encoding: UTF-8
 NeedsCompilation: yes
-Packaged: 2026-10-01 18:34:03 UTC; haziqj
+Packaged: 2026-10-26 15:56:05 UTC; haziqj
 Author: Haziq Jamil [aut, cre, cph] (ORCID:
     <https://orcid.org/0000-0003-3298-1010>),
   Håvard Rue [ctb] (ORCID: <https://orcid.org/0000-0002-0222-1881>,
@@ -42,4 +42,4 @@ Author: Haziq Jamil [aut, cre, cph] (ORCID:
   Alvin Bong [ctb] (Initial site build)
 Maintainer: Haziq Jamil <haziq.jamil@gmail.com>
 Repository: CRAN
-Date/Publication: 2026-10-01 19:00:08 UTC
+Date/Publication: 2026-10-26 17:30:08 UTC

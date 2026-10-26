@@ -18,7 +18,8 @@
 #'   inherited from there.
 #'
 #' @param dp Default prior distributions for the different types of model
-#'   parameters; a named character vector as returned by [priors_for()].
+#'   parameters; a named character vector as returned by [priors_for()]. Types
+#'   left out take their default priors.
 #' @param test Character vector naming the post-estimation quantities to
 #'   compute and store with the fit. The atoms are `"ppp"` (posterior
 #'   predictive p-value), `"dic"` (deviance information criterion and its
@@ -32,11 +33,18 @@
 #'   both. They run only when asked for, with no time budget. On a model
 #'   the casewise machinery does not support (PML or ordinal data,
 #'   `conditional.x = TRUE`, multigroup two-level) they are skipped with a
-#'   warning and the rest of the fit proceeds. The fit records what was
-#'   requested and what was computed (`get_inlavaan_internal(fit, "test")`);
+#'   warning and the rest of the fit proceeds. For a two-level model the PPP
+#'   follows blavaan: each of `ppp_nsamp` posterior draws generates replicate
+#'   data, which are scored against the saturated model (see `ppp_method`).
+#'   The two-level PPP is experimental.
+#'   The fit records what was requested and what was computed
+#'   (`get_inlavaan_internal(fit, "test")`);
 #'   [summary()], [fitmeasures()], [deviance()], [logLik()] and [timing()]
 #'   report only what was computed. [add_loo()] stores the LOO and WAIC
-#'   post hoc; [loo()] and [waic()] compute on demand.
+#'   post hoc; [loo()] and [waic()] compute on demand. For a random-slope
+#'   model `"ppp"` is dropped, with a warning when it was asked for and a
+#'   message otherwise (see the Random slopes section of [inlavaan()]).
+#'   `"dic"`, `"loo"` and `"waic"` are unaffected.
 #' @param vb_correction Logical indicating whether to apply a variational Bayes
 #'   correction for the posterior mean vector of estimates. Defaults to `TRUE`.
 #' @param n_qmc Number of quasi-Monte Carlo nodes used by the VB mean
@@ -59,12 +67,12 @@
 #'   approximation), and `"sampling"` (sampling from the joint Laplace
 #'   approximation).
 #' @param marginal_correction Which type of correction to use when fitting the
-#'   skew-normal or two-piece Gaussian marginals. `"hessian"` computes the full
-#'   `"shortcut"` (default) computes only diagonals via central differences
-#'   (full z-trace plus Schur complement correction), `"shortcut_fd"` is the
-#'   same formula using forward differences (roughly half the cost, less
-#'   accurate), `"hessian"` computes the full Hessian-based correction (slow),
-#'   and `"none"` (or `FALSE`) applies no correction.
+#'   skew-normal or two-piece Gaussian marginals. `"shortcut"` (default)
+#'   computes only diagonals via central differences (full z-trace plus Schur
+#'   complement correction), `"shortcut_fd"` is the same formula using forward
+#'   differences (roughly half the cost, less accurate), `"hessian"` computes
+#'   the full Hessian-based correction (slow), and `"none"` (or `FALSE`)
+#'   applies no correction.
 #' @param nsamp The number of samples to draw for all sampling-based approaches
 #'   (including posterior sampling for model fit indices).
 #' @param samp_copula Logical. When `TRUE` (default), posterior samples are
@@ -137,6 +145,18 @@
 #'   cores -- forked via [parallel::mclapply()] where that is safe, or over a
 #'   PSOCK cluster (separate R processes) inside IDE R sessions (RStudio,
 #'   Positron) and on Windows.
+#' @param ppp_method How the PPP of a two-level model scores the observed and
+#'   the replicate data against the saturated model. `"onestep"` (default)
+#'   takes one Fisher-scoring step from the moments of each posterior draw
+#'   towards the saturated fit, and fits by EM where the step would leave the
+#'   valid covariance matrices (with few clusters or a small between
+#'   variance). `"em"` always fits the saturated model by EM, as blavaan does.
+#'   Fits with `missing = "ml"` always use `"em"`. Ignored for single-level
+#'   models.
+#' @param ppp_nsamp The number of posterior draws, each with one replicate data
+#'   set, that the PPP of a two-level model uses. Defaults to `250`, and is
+#'   capped at `nsamp`. Draws that cannot be scored are left out, with a
+#'   warning. Ignored for single-level models.
 #' @param ... Additional arguments to be passed to the [lavaan] model fitting
 #'   function.
 #'
@@ -150,6 +170,91 @@
 #'   `vb_mcse_max` globally, both in posterior-SD units. Setting
 #'   `vb_method = "gauss_hermite"` removes the random node set altogether; see
 #'   the `vb_method` argument.
+#'
+#' @section Random slopes:
+#' Wrapping a level-1 regression coefficient in lavaan's `rv()` modifier
+#' turns it into a level-2 latent variable -- a random slope -- which can
+#' then be given a mean, a variance and cross-level regressions like any
+#' other level-2 latent variable:
+#'
+#' ```
+#' level: 1
+#'   fw =~ y1 + y2 + y3
+#'   fw ~ rv('s1')*x1
+#' level: 2
+#'   fb =~ y1 + y2 + y3
+#'   s1 ~ w1
+#'   s1 ~~ s1
+#'   s1 ~ 1
+#' ```
+#'
+#' The slope's variance and intercept are added automatically, so in
+#' practice only the cross-level regression `s1 ~ w1` need be written out.
+#' [summary()] marks the level-1 carrier row as `x1 (s1)`: that row is
+#' fixed at zero, the slope itself being reported under Level 2.
+#'
+#' The likelihood takes one of two routes. When the covariate carrying the
+#' slope is observed and purely within-cluster, the slope integrates out in
+#' closed form. When it is latent, or split across both levels (the same
+#' variable entering at level 1 and at level 2), the integral is done by
+#' Gauss-Hermite quadrature instead; that route warns at fit time and is
+#' governed by `integration.ngh`, passed through to lavaan. The node count
+#' is an accuracy setting as much as a cost setting, so give every fit that
+#' is to be compared with another the same `integration.ngh`.
+#'
+#' A model with observed exogenous covariates requires `fixed.x = TRUE`
+#' (the default): the likelihood is the density of the outcomes *given*
+#' those covariates, so their own means and (co)variances are unidentified
+#' and would be reported back as their priors. A `fixed.x = FALSE` fit is
+#' refused. A model whose covariates are all latent or modelled has nothing
+#' to hold fixed, and lavaan reports `fixed.x = FALSE` for it of its own
+#' accord; such a fit is accepted as it stands.
+#'
+#' Equality constraints work as for other models, except that covariances
+#' cannot be held equal. Composites (`<~`) cannot be combined with random
+#' slopes yet.
+#'
+#' A random-slope model implies no single within-cluster covariance matrix:
+#' the covariance of the outcomes depends on the covariate values.
+#' [fitted()] and [residuals()] therefore use the implied moments averaged
+#' over the covariates, which include the mean and the variance of each
+#' slope, or with `per_cluster = TRUE` the moments of each cluster at its
+#' own covariate values (closed-form route only). [standardisedsolution()]
+#' and the standardised columns and R-square of [summary()] are scaled by
+#' the averaged variances. The carrier row `x1 (s1)` then gives the
+#' standardised mean slope, and the slope's own rows are on the same
+#' standardised scale. An outcome observed at level 1 only, whose slope
+#' covariate has a non-zero mean, has no place in lavaan's two-level layout,
+#' and these outputs abort for it.
+#'
+#' [simulate()] draws each cluster's slopes and other level-2 effects and
+#' then its outcomes, at the cluster's own covariates (closed-form route
+#' only). [sampling()] gives latent, observed and implied draws. [predict()]
+#' gives `type = "lv"` and, on the closed-form route, the cluster-specific
+#' `"yhat"` and `"ypred"` from the empirical Bayes random effects, while
+#' `fitted(type = "casewise")` gives the outcomes' means given the
+#' covariates. [bfit_indices()] scales the Bayesian fit indices against the
+#' unrestricted random-coefficient model with the same random-effects design,
+#' because a saturated model does not exist here. This reference is
+#' INLAvaan's own construction (closed-form route only).
+#'
+#' The posterior predictive p-value (`test = "ppp"`) is dropped, because a
+#' random-slope model has no saturated model to score replicate data against.
+#' What aborts with an explanation: the residual types scaled by standard
+#' errors, `predict(type = "ymis")`, and `loo(type = "loso")`, which would
+#' need a cluster's sufficient statistics downdated by one row.
+#'
+#' The model-comparison side works throughout. [compare()] reports the
+#' marginal likelihood, Bayes factors, the DIC and its \eqn{p_D}, and [loo()]
+#' and [waic()] score the fit leave-one-cluster-out on the conditional
+#' likelihood.
+#'
+#' To ask whether there is a random slope at all, compare the fit with the
+#' fixed-slope model (`fw ~ x1` at level 1) using [compare()]. On the
+#' closed-form route, fixing the slope variance at zero (`s1 ~~ 0*s1`) and
+#' dropping any cross-level regression on the slope gives the same model.
+#' Keeping `s1 ~ w1` gives a cross-level interaction model instead. The
+#' quadrature route refuses a slope variance fixed at zero.
 #'
 #' @seealso Typically, users will interact with the specific latent variable
 #'   model functions instead, including [acfa()], [asem()], and [agrowth()].
@@ -186,6 +291,8 @@ inlavaan <- function(
   numerical_grad = FALSE,
   start = NULL,
   cores = NULL,
+  ppp_method = c("onestep", "em"),
+  ppp_nsamp = 250L,
   ...
 ) {
   mc <- match.call()
@@ -200,6 +307,15 @@ inlavaan <- function(
     if (is.na(cores) || cores < 1L) cores <- 1L
   } # nocov end
   marginal_method <- match.arg(marginal_method)
+  ppp_method <- match.arg(ppp_method)
+  if (
+    !is.numeric(ppp_nsamp) ||
+      length(ppp_nsamp) != 1L ||
+      is.na(ppp_nsamp) ||
+      ppp_nsamp < 1
+  ) {
+    cli_abort("{.arg ppp_nsamp} must be a number of at least 1.")
+  }
   if (isFALSE(marginal_correction)) {
     marginal_correction <- "none"
   } else {
@@ -213,14 +329,55 @@ inlavaan <- function(
   # `test` is an INLAvaan-only selection of post-estimation quantities (see
   # resolve_test() in R/utils.R); it never reaches lavaan as typed
   test_req <- resolve_test(test)
+  # Parameter types missing from dp (in a vector saved before a type existed,
+  # say) take their default prior.
+  if (length(dp) > 0L && (is.null(names(dp)) || !all(nzchar(names(dp))))) {
+    cli_abort(
+      "{.arg dp} must be a named vector, as returned by {.fn priors_for}."
+    )
+  }
+  dp_default <- priors_for()
+  dp <- c(dp, dp_default[setdiff(names(dp_default), names(dp))])
+  # What the user asked for, kept for the `test` record below: `test_req`
+  # itself loses any atom that does not exist for this model class (see the
+  # random-slope checks further down).
+  test_requested <- test_req
 
   lavargs <- list(...)
-  lavargs$model <- model
+  lavargs$model <- split_modifiers(model)
   lavargs$data <- data
   lavargs$ceq.simple <- TRUE # FIXME: Force ceq.simple rather than eq.constraints
   lavargs$verbose <- FALSE # FIXME: Need some quiet mode maybe
   lavargs$do.fit <- FALSE
   lavargs$parser <- "old" # To get priors parsed
+  # lavaan's Wishart likelihood (likelihood = "wishart", the default under
+  # mimic = "EQS" or "LISREL") divides the sample covariance by n - 1. The
+  # likelihood here assumes lavaan's divisor-n covariance, and without a mean
+  # structure the saturated means are integrated out, which already gives the
+  # Wishart form. So the normal likelihood is always used.
+  likelihood_req <- tolower(lavargs$likelihood %||% "default")
+  mimic_req <- tolower(lavargs$mimic %||% "default")
+  if (
+    likelihood_req == "wishart" ||
+      (likelihood_req == "default" && mimic_req %in% c("eqs", "lisrel"))
+  ) {
+    cli_inform(c(
+      "i" = "INLAvaan always uses the normal likelihood, so
+             {.code likelihood = \"wishart\"} is ignored.",
+      " " = "Without a mean structure, integrating out the saturated means
+             already gives the Wishart likelihood."
+    ))
+  }
+  lavargs$likelihood <- "normal"
+  # The (co)variances of a composite's indicators are parameters with priors,
+  # unless the user fixes them at their sample values (composites.cov =
+  # "fixed", lavaan's default).
+  if (
+    !any(c("composites.cov", "composites_cov") %in% names(lavargs)) &&
+      has_composite_syntax(lavargs$model)
+  ) {
+    lavargs$composites.cov <- "free"
+  }
   # lavaan only ever sees "standard" or "none": its own test statistics are
   # never computed under do.fit = FALSE, and INLAvaan's atoms ("loo", ...)
   # are not lavaan-legal values
@@ -249,14 +406,47 @@ inlavaan <- function(
   }
 
   ## ----- Initialise lavaan object --------------------------------------------
-  fit0 <- do.call(get(model.type, envir = asNamespace("lavaan")), lavargs)
-  if (length(fit0@Data@ordered) > 0) {
+  # lavaan evaluates the := parameters at the start values, where they may be
+  # undefined. Any draws where they are undefined are reported later.
+  fit0 <- muffle_nan_warnings(muffle_rs_test_warning(
+    do.call(get(model.type, envir = asNamespace("lavaan")), lavargs)
+  ))
+  check_composite_scope(fit0)
+  # Ordinal variables come from `ordered =`, threshold syntax or ordered-factor
+  # columns. Name exactly those the model uses, so that the PML refit (and its
+  # kappa scaling) sees all of them and nothing else.
+  ord_names <- lavaan::lavNames(fit0, "ov.ord")
+  if (length(ord_names) > 0) {
     # Redo automatically with PML if ordinal data
+    lavargs$ordered <- ord_names
     lavargs$estimator <- "PML"
     lavargs$parameterization <- "theta"
     lavargs$test <- "none"
-    fit0 <- do.call(get(model.type, envir = asNamespace("lavaan")), lavargs)
+    fit0 <- muffle_nan_warnings(
+      do.call(get(model.type, envir = asNamespace("lavaan")), lavargs)
+    )
   }
+  if (!fit0@Model@estimator %in% c("ML", "PML")) {
+    cli_abort(c(
+      "lavaan chose the {.val {fit0@Model@estimator}} estimator, which INLAvaan
+       does not support.",
+      "i" = "{.arg ordered} must name endogenous observed variables in the
+             model."
+    ))
+  }
+  check_composite_derived(fit0@ParTable)
+  check_composite_labels(fit0@ParTable)
+  # Rebuild from a table where explicit constraints are shared free indices or
+  # fixed values (see pack_constraints()).
+  pt_packed <- pack_constraints(fit0@ParTable, fit0@Options$effect.coding)
+  if (!is.null(pt_packed)) {
+    lavargs$model <- pt_packed
+    fit0 <- muffle_nan_warnings(muffle_rs_test_warning(
+      do.call(get(model.type, envir = asNamespace("lavaan")), lavargs)
+    ))
+  }
+  check_composite_weights(fit0@ParTable)
+  check_composite_covariances(fit0@ParTable)
   lavmodel <- fit0@Model
   lavsamplestats <- fit0@SampleStats
   lavdata <- fit0@Data
@@ -267,8 +457,87 @@ inlavaan <- function(
   ceq.simple <- lavmodel@ceq.simple.only
   ceq.K <- lavmodel@ceq.simple.K # used to pack params/grads
 
-  # Partable and check for equality constraints
+  # Partable. Built here rather than with the rest of the optimisation
+  # bookkeeping below because the random-slope checks read the
+  # transformation each free parameter carries.
   pt <- inlavaanify_partable(lavpartable, dp, lavdata, lavoptions)
+  check_packed_kinds(pt)
+  check_composite_means(pt, lavoptions)
+  pt$parstart <- composite_start_weights(pt, lavsamplestats, lavdata)
+
+  ## ----- Random-slope checks -------------------------------------------------
+  # A random-slope likelihood is a per-cluster kernel conditional on the
+  # covariates, which rules out two things the rest of the pipeline would
+  # otherwise do. Everything here is a no-op without an `rv()` modifier.
+  rs_skipped <- character(0)
+  if (has_random_slopes(lavmodel)) {
+    # lavaan reports `fixed.x = FALSE` of its own accord for a model with
+    # no observed exogenous variables at all -- a slope on a latent
+    # covariate, say -- so the slot alone would refuse such a fit over an
+    # argument the user never passed. The syntax-level set decides.
+    if (
+      !isTRUE(lavmodel@fixed.x) &&
+        length(lavaan::lavNames(lavpartable, "ov.x")) > 0L
+    ) {
+      cli_abort(
+        c(
+          "Random-slope models require {.code fixed.x = TRUE}.",
+          "x" = "The likelihood conditions on the exogenous covariates, so
+                 their means and (co)variances are unidentified and would be
+                 reported back as their priors.",
+          "i" = "Refit with {.code fixed.x = TRUE}."
+        ),
+        class = "inlavaan_rs_fixedx"
+      )
+    }
+    if ("ppp" %in% test_req) {
+      test_req <- setdiff(test_req, "ppp")
+      # Collapsed to one line because the reason is handed back to the
+      # user through `test$skipped`, where the source indentation of a
+      # wrapped string would show through
+      rs_skipped <- c(
+        ppp = gsub(
+          "\\s+",
+          " ",
+          "A posterior predictive p-value scores replicate data against a
+           saturated model, and a random-slope model has none. Each cluster
+           has its own covariance, which depends on its covariate values."
+        )
+      )
+      if (any(c("ppp", "full") %in% test)) {
+        cli_warn(
+          c(
+            "Dropping {.val ppp} from {.arg test}: a posterior predictive
+             p-value does not exist for a random-slope model.",
+            "x" = "Its discrepancy scores replicate data against a saturated
+                   model, and a random-slope model has none. Each cluster has
+                   its own covariance, which depends on its covariate
+                   values.",
+            "i" = "Use {.fn compare} (marginal likelihood, Bayes factors,
+                   DIC) or {.fn loo} instead."
+          ),
+          class = "inlavaan_rs_ppp"
+        )
+      } else if (isTRUE(verbose)) {
+        # Kept to one source line: cli_alert_info() does not re-wrap
+        cli_alert_info(
+          "No PPP: a random-slope model has no saturated model."
+        )
+      }
+    }
+    # A slope on a latent or split covariate replaces the closed-form
+    # cluster kernel with Gauss-Hermite quadrature, which is worth saying
+    # whatever `verbose` asks for.
+    if (isTRUE(lavcache[[1L]]$rs$info$nl.flag)) {
+      check_rs_zero_var(lavpartable, lavmodel)
+      warn_rs_route_b(list(ngh = lavcache[[1L]]$rs$info$ngh))
+    }
+    # Equality constraints lavaan's packed random-slope gradient cannot be
+    # redistributed over exactly (see rs_unpack_grad())
+    check_rs_ceq(pt, lavmodel)
+  }
+
+  # Free parameters, always in the reduced space under equality constraints
   PTFREEIDX <- which(pt$free > 0L)
   if (isTRUE(ceq.simple)) {
     # Note: Always work in the reduced space
@@ -276,6 +545,24 @@ inlavaan <- function(
   }
   m <- length(PTFREEIDX)
   parnames <- pt$names[PTFREEIDX]
+  if (anyDuplicated(parnames) > 0) {
+    # nocov start
+    cli_abort(
+      "Parameter names must be unique, but {.code
+       {unique(parnames[duplicated(parnames)])}} appear{?s/} more than once."
+    )
+  } # nocov end
+
+  # Draw-based summaries: covariances, defined (:=) and delta (~*~) parameters,
+  # or (for the pure sampling method) every marginal.
+  needs_draw_summaries <-
+    marginal_method == "sampling" ||
+    sum(pt$free > 0 & grepl("cov", pt$mat)) > 0 ||
+    any(pt$op == ":=") ||
+    any(pt$op == "~*~")
+  if (needs_draw_summaries && !isTRUE(nsamp >= 2)) {
+    cli_abort("{.arg nsamp} must be at least 2 to summarise posterior draws.")
+  }
 
   # Cache partable for prior logdens and grad
   prior_cache <- prepare_priors_for_optim(pt)
@@ -479,7 +766,22 @@ inlavaan <- function(
   canon_perm <- order(parnames)
   inv_perm <- order(canon_perm)
   H_canon <- H_sym[canon_perm, canon_perm]
-  R_prec <- chol(H_canon) # upper Cholesky of canonical precision
+  # Upper Cholesky of the canonical precision
+  R_prec <- if (all(is.finite(H_canon))) {
+    tryCatch(chol(H_canon), error = function(e) NULL)
+  }
+  if (is.null(R_prec)) {
+    problem <- if (all(is.finite(H_canon))) {
+      "is not positive definite"
+    } else {
+      "has values that are not finite"
+    }
+    cli_abort(c(
+      "The Hessian at the posterior mode {problem}.",
+      "i" = "The optimiser may have stopped short of the mode, or the model
+             may not be identified."
+    ))
+  }
   L_canon <- backsolve(R_prec, diag(m)) # L_c L_c^T = Sigma_canon (upper tri)
   L <- L_canon[inv_perm, ] # rows back to original param order
   Sigma_theta <- tcrossprod(L) # reconstruct covariance
@@ -753,7 +1055,10 @@ inlavaan <- function(
     )
 
     vb_kld <- (vb_shift)^2 / (2 * diag(Sigma_theta))
-    vb_kld_global <- lp_max + vb_opt$objective
+    # The joint counterpart of vb_kld: the KL divergence between the Laplace
+    # Gaussian and its VB-shifted copy, 0.5 * shift' H shift, read off the
+    # precision Cholesky in canonical order.
+    vb_kld_global <- 0.5 * sum((R_prec %*% vb_shift[canon_perm])^2)
   }
 
   vb <- list(
@@ -781,8 +1086,26 @@ inlavaan <- function(
   # Marginal log-likelihood (for BF comparison)
   # log det(Sigma) = -2 sum(log(diag(R_prec))) from the precision Cholesky
   mloglik <- lp_max + (m / 2) * log(2 * pi) - sum(log(diag(R_prec)))
+  # Two-level fits under fixed.x get a theta-free shift that makes the evidence
+  # (and the DIC below) conditional on the covariates.
+  theta_mode <- if (isTRUE(ceq.simple)) {
+    as.numeric(ceq.K %*% theta_star)
+  } else {
+    theta_star
+  }
+  loglik_x_adj <- twolevel_fixedx_loglik_adj(
+    lavmodel,
+    pars_to_x(theta_mode, pt),
+    lavdata,
+    lavsamplestats
+  )
+  mloglik <- mloglik + loglik_x_adj
   if (isTRUE(vb_correction)) {
-    mloglik <- mloglik - vb_kld_global
+    # Laplace at the mode treats the posterior as symmetric about its peak.
+    # The VB shift shows that the mass leans to one side, and the mass this
+    # misses is, to O(1/n), the location term of the Laplace expansion. For
+    # the mode-to-mean shift that term is 0.5 * shift' H shift, so it is added.
+    mloglik <- mloglik + vb_kld_global
   }
   timing <- add_timing(timing, "loglik")
 
@@ -932,7 +1255,12 @@ inlavaan <- function(
           )
         )
         # Keep the z-space fit so visual_debug() can draw the smooth SN curve
-        attr(vd, "sn_params") <- unlist(fit_sn[c("xi", "omega", "alpha", "logC")])
+        attr(vd, "sn_params") <- unlist(fit_sn[c(
+          "xi",
+          "omega",
+          "alpha",
+          "logC"
+        )])
 
         # Adjust back to theta space
         fit_sn$xi <- theta_star[j] + fit_sn$xi * sqrt(Sigma_theta[j, j])
@@ -1012,13 +1340,6 @@ inlavaan <- function(
   timing <- add_timing(timing, "norta")
 
   ## ----- Draw posterior samples (once) ---------------------------------------
-  # Draw-based summaries: covariances, defined (:=) and delta (~*~) parameters,
-  # or (for the pure sampling method) every marginal
-  needs_draw_summaries <-
-    marginal_method == "sampling" ||
-    sum(pt$free > 0 & grepl("cov", pt$mat)) > 0 ||
-    any(pt$op == ":=") ||
-    any(pt$op == "~*~")
   has_extra_samp_work <- needs_draw_summaries ||
     any(c("ppp", "dic") %in% test_req)
   samp_env <- NULL
@@ -1118,21 +1439,42 @@ inlavaan <- function(
   timing <- add_timing(timing, "covariances")
 
   # Defined parameters
+  def_undefined <- NULL
   if (any(pt$op == ":=")) {
     if (marginal_method == "skewnorm" && isTRUE(sn_fit_sample)) {
-      # nocov start
-      defpars <- get_defpars_fit_sn(x_samp, pt)
+      defpars <- get_defpars(x_samp, pt, lavmodel, summarise_samples_sn)
       sn_rows <- do.call(rbind, lapply(defpars, `[[`, "sn_params"))
       approx_data <- rbind(approx_data, sn_rows)
     } else {
-      # nocov end
-      defpars <- get_defpars(x_samp, pt)
+      defpars <- get_defpars(x_samp, pt, lavmodel)
     }
+    def_undefined <- attr(defpars, "undefined")
 
     for (def_name in names(defpars)) {
       tmp_new_summ <- defpars[[def_name]]$summary
       summ[def_name, names(tmp_new_summ)] <- tmp_new_summ
       pdf_data[[def_name]] <- defpars[[def_name]]$pdf_data
+    }
+  }
+
+  # Composite variances and intercepts are functions of the weights, so their
+  # posteriors come from the draws in the same way.
+  if (length(composite_derived_rows(pt)) > 0L) {
+    comp_draws <- composite_derived_draws(x_samp, pt, lavmodel)
+    use_sn <- marginal_method == "skewnorm" && isTRUE(sn_fit_sample)
+    summarise <- if (use_sn) summarise_samples_sn else summarise_samples
+    comp_summ <- lapply(seq_len(ncol(comp_draws)), function(j) {
+      summarise(comp_draws[, j])
+    })
+    names(comp_summ) <- colnames(comp_draws)
+    if (use_sn) {
+      sn_rows <- do.call(rbind, lapply(comp_summ, `[[`, "sn_params"))
+      approx_data <- rbind(approx_data, sn_rows)
+    }
+    for (comp_name in names(comp_summ)) {
+      tmp_new_summ <- comp_summ[[comp_name]]$summary
+      summ[comp_name, names(tmp_new_summ)] <- tmp_new_summ
+      pdf_data[[comp_name]] <- comp_summ[[comp_name]]$pdf_data
     }
   }
   timing <- add_timing(timing, "definedpars")
@@ -1152,6 +1494,7 @@ inlavaan <- function(
 
   ## ----- Compute ppp and dic -------------------------------------------------
   ppp <- dic_list <- NULL
+  skipped <- rs_skipped
   if (any(c("ppp", "dic") %in% test_req)) {
     if (isTRUE(verbose)) {
       samp_stage <- paste0(
@@ -1161,7 +1504,39 @@ inlavaan <- function(
       )
       cli_progress_update(.envir = samp_env)
     }
-    if ("ppp" %in% test_req) {
+    fixed_both <- if (lavdata@nlevels > 1L) ppp2l_fixed_both(lavdata)
+    if ("ppp" %in% test_req && length(fixed_both) > 0L) {
+      # nocov start -- lavaan models a covariate at both levels, so it does
+      # not mark one as fixed at both today.
+      msg <- paste0(
+        "The two-level PPP draws its replicate data given the fixed ",
+        "covariates of each level, and ",
+        paste(fixed_both, collapse = ", "),
+        " is fixed at both levels."
+      )
+      cli_warn(c(
+        "Skipping the PPP requested through {.arg test}.",
+        "x" = cli_escape(msg),
+        "i" = "The rest of the fit is unaffected; the reason is stored in
+               {.code get_inlavaan_internal(fit, \"test\")$skipped}."
+      ))
+      skipped <- c(skipped, ppp = msg)
+      # nocov end
+    } else if ("ppp" %in% test_req && lavdata@nlevels > 1L) {
+      n_ppp <- min(nrow(x_samp), floor(ppp_nsamp))
+      ppp <- get_ppp_twolevel(
+        x_samp = x_samp[seq_len(n_ppp), , drop = FALSE],
+        lavmodel = lavmodel,
+        lavsamplestats = lavsamplestats,
+        lavdata = lavdata,
+        method = ppp_method,
+        cli_env = samp_env
+      )
+      if (is.na(ppp)) {
+        skipped <- c(skipped, ppp = "No posterior draw could be scored.")
+        ppp <- NULL
+      }
+    } else if ("ppp" %in% test_req) {
       ppp <- get_ppp(
         x_samp = x_samp,
         lavmodel = lavmodel,
@@ -1186,7 +1561,8 @@ inlavaan <- function(
             lavdata,
             lavoptions,
             lavcache
-          )
+          ) +
+            loglik_x_adj
         },
         cli_env = samp_env
       )
@@ -1200,6 +1576,7 @@ inlavaan <- function(
     partable = pt,
     lavmodel = lavmodel,
     lavdata = lavdata,
+    lavcache = if (has_random_slopes(lavmodel)) lavcache else NULL,
     lavsamplestats = lavsamplestats,
     theta_star = as.numeric(theta_star_vbc),
     Sigma_theta = Sigma_theta,
@@ -1215,7 +1592,6 @@ inlavaan <- function(
   # and skips them rather than failing the whole fit; the reason is kept in
   # the `test` record below rather than only in the transient warning.
   loo_res <- waic_res <- NULL
-  skipped <- character(0)
   if (any(c("loo", "waic") %in% test_req)) {
     if (isTRUE(verbose)) {
       samp_stage <- "Computing Taylor LOO and WAIC"
@@ -1225,7 +1601,8 @@ inlavaan <- function(
       inlav_loo(
         int = int_fit,
         eff_cores = resolve_loo_cores(cores),
-        verbose = FALSE
+        verbose = FALSE,
+        warn_route_b = FALSE
       ),
       error = function(e) e
     )
@@ -1237,7 +1614,7 @@ inlavaan <- function(
         "i" = "The rest of the fit is unaffected; the reason is stored in
                {.code get_inlavaan_internal(fit, \"test\")$skipped}."
       ))
-      skipped <- c(loo = msg, waic = msg)
+      skipped <- c(skipped, loo = msg, waic = msg)
     } else {
       loo_res <- loo_try
       timing <- add_timing(timing, "loo")
@@ -1252,7 +1629,11 @@ inlavaan <- function(
     !is.null(loo_res),
     !is.null(waic_res)
   )]
-  test_rec <- list(requested = test_req, computed = computed, skipped = skipped)
+  test_rec <- list(
+    requested = test_requested,
+    computed = computed,
+    skipped = skipped
+  )
 
   if (isTRUE(verbose)) {
     # Close the sampling step with an overview; the specific fit measures
@@ -1270,6 +1651,13 @@ inlavaan <- function(
       cli_alert_info(
         paste0("Fit measures: ", paste(fit_measures, collapse = ", "), ".")
       )
+    }
+    if ("ppp" %in% computed && lavdata@nlevels > 1L) {
+      cli_alert_info("The two-level PPP is experimental.")
+      cli_alert_info(paste0(
+        "Please report any bugs at ",
+        "{.url https://github.com/haziqj/INLAvaan/issues}."
+      ))
     }
   }
 
@@ -1304,10 +1692,12 @@ inlavaan <- function(
     approx_data = approx_data,
     nsamp = nsamp,
     pdf_data = pdf_data,
+    def_undefined = def_undefined,
     partable = pt,
     lavmodel = lavmodel,
     lavsamplestats = lavsamplestats,
     lavdata = lavdata,
+    lavcache = if (has_random_slopes(lavmodel)) lavcache else NULL,
     opt = opt,
     timing = timing[-1], # remove start.time
     visual_debug = visual_debug,
@@ -1377,6 +1767,8 @@ acfa <- function(
   optim_method = c("nlminb", "ucminf", "optim"),
   numerical_grad = FALSE,
   cores = NULL,
+  ppp_method = c("onestep", "em"),
+  ppp_nsamp = 250L,
   ...
 ) {
   sc <- sys.call()
@@ -1433,6 +1825,8 @@ asem <- function(
   optim_method = c("nlminb", "ucminf", "optim"),
   numerical_grad = FALSE,
   cores = NULL,
+  ppp_method = c("onestep", "em"),
+  ppp_nsamp = 250L,
   ...
 ) {
   sc <- sys.call()
@@ -1487,6 +1881,8 @@ agrowth <- function(
   optim_method = c("nlminb", "ucminf", "optim"),
   numerical_grad = FALSE,
   cores = NULL,
+  ppp_method = c("onestep", "em"),
+  ppp_nsamp = 250L,
   ...
 ) {
   sc <- sys.call()

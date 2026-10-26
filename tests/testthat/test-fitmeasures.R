@@ -47,6 +47,27 @@ test_that("Basic fitMeasures returns expected names", {
   expect_true("margloglik" %in% names(fm))
 })
 
+test_that("The deviance chi-square at the ML estimate is lavaan's chi-square", {
+  # fit_notest has no mean structure, whose saturated means INLAvaan
+  # marginalises. The chi-square still compares profiled logliks.
+  fit_ml <- lavaan::cfa(mod, dat)
+  int <- get_inlavaan_internal(fit_notest)
+  chisq <- compute_chisq_dev(
+    fit_notest,
+    matrix(lavaan::coef(fit_ml), 1L),
+    int$lavmodel,
+    int$lavsamplestats,
+    int$lavdata,
+    reconstruct_lavoptions(fit_notest),
+    NULL
+  )
+  expect_equal(
+    chisq,
+    unname(lavaan::fitMeasures(fit_ml, "chisq")),
+    tolerance = 1e-6
+  )
+})
+
 test_that("Bayesian absolute fit indices are computed with test != 'none'", {
   fm <- fitMeasures(fit_test)
   abs_names <- c("BRMSEA", "BGammaHat", "adjBGammaHat", "BMc")
@@ -220,6 +241,18 @@ test_that("Moment count excludes fixed exogenous covariates, as in lavaan", {
   expect_equal(lavaan::lav_partable_ndat(fit_x@ParTable), 9)
 })
 
+test_that("Moment counts without composites are lavaan's", {
+  expect_equal(
+    count_sample_moments(fit_test@ParTable),
+    lavaan::lav_partable_ndat(fit_test@ParTable)
+  )
+  fit_mg <- lavaan::cfa(mod, dat, group = "school", do.fit = FALSE)
+  expect_equal(
+    count_sample_moments(fit_mg@ParTable),
+    lavaan::lav_partable_ndat(fit_mg@ParTable)
+  )
+})
+
 test_that("Two-level fit indices are finite and sane", {
   skip_on_cran()
   d2 <- lavaan::Demo.twolevel[lavaan::Demo.twolevel$cluster %in% 1:60, ]
@@ -268,4 +301,109 @@ test_that("Two-level fit indices are finite and sane", {
   )
   fmm <- fitMeasures(fit2m)
   expect_true(all(is.finite(fmm[idx])))
+})
+
+## ----- Composites ------------------------------------------------------------
+
+mod_comp <- "
+  C <~ x1 + x2 + x3
+  x4 ~ C
+  x5 ~ C
+  x4 ~~ x5
+"
+
+# With composites.cov = "fixed" the (co)variances of composite indicators are
+# fixed at their sample values, so they are not sample moments the model has to
+# fit
+test_that("Each group's fixed composite moments are removed once", {
+  skip_on_cran()
+  fit_mg <- asem(
+    mod_comp,
+    dat,
+    composites.cov = "fixed",
+    group = "school",
+    verbose = FALSE,
+    nsamp = 20,
+    test = "none",
+    vb_correction = FALSE,
+    marginal_method = "marggaus"
+  )
+  # Per group 15 covariances and 5 means, less 6 fixed indicator moments
+  expect_equal(count_sample_moments(fit_mg@ParTable), 28)
+  b <- bfit_indices(fit_mg, baseline.model = FALSE, rescale = "MCMC")
+  # Against 24 parameters, which lavaan's own count puts at df = -8
+  expect_equal(b$details$df, 4)
+  expect_true("BRMSEA" %in% names(b$indices))
+
+  # One group is counted as lavaan counts it
+  fit_one <- lavaan::sem(mod_comp, dat, do.fit = FALSE)
+  expect_equal(count_sample_moments(fit_one@ParTable), 9)
+  expect_equal(
+    count_sample_moments(fit_one@ParTable),
+    lavaan::lav_partable_ndat(fit_one@ParTable)
+  )
+
+  # An indicator covariance fixed by the user is tested, so it counts
+  fit_fix <- lavaan::sem(
+    paste(mod_comp, "\n x1 ~~ 0.3*x2"),
+    dat,
+    do.fit = FALSE
+  )
+  expect_equal(count_sample_moments(fit_fix@ParTable), 10)
+})
+
+test_that("The baseline is scaled by its own moment count", {
+  p_used <- numeric(0)
+  rescale_original <- compute_rescaled_quantities
+  local_mocked_bindings(
+    compute_rescaled_quantities = function(
+      object,
+      x_samp,
+      lavmodel,
+      lavsamplestats,
+      lavdata,
+      lavoptions,
+      lavcache,
+      p,
+      rescale,
+      loglik_sat = NULL
+    ) {
+      p_used <<- c(p_used, p)
+      rescale_original(
+        object,
+        x_samp,
+        lavmodel,
+        lavsamplestats,
+        lavdata,
+        lavoptions,
+        lavcache,
+        p,
+        rescale,
+        loglik_sat
+      )
+    }
+  )
+  fit_comp <- asem(
+    mod_comp,
+    dat,
+    composites.cov = "fixed",
+    verbose = FALSE,
+    nsamp = 20,
+    test = "none",
+    vb_correction = FALSE,
+    marginal_method = "marggaus"
+  )
+  bfit_indices(fit_comp, rescale = "MCMC")
+  # The composite model fixes six indicator moments, which its independence
+  # baseline estimates
+  expect_equal(p_used, c(9, 15))
+
+  # Without composites the two counts agree
+  p_used <- numeric(0)
+  bfit_indices(fit_test, baseline.model = fit_null)
+  expect_equal(p_used, c(21, 21))
+})
+
+test_that("BCFI follows lavaan when the baseline has no noncentrality", {
+  expect_equal(compute_BCFI(c(1, 2, 0), c(4, 0, 0)), c(0.75, 0, 1))
 })

@@ -172,6 +172,118 @@ test_that("Observed posterior draws are centred without a mean structure", {
   expect_lt(max(abs(colMeans(yrep) - ybar)), 0.5)
 })
 
+test_that("conditional.x fits draw the covariates jointly", {
+  skip_on_cran()
+  hs <- na.omit(lavaan::HolzingerSwineford1939)
+  fit <- suppressWarnings(asem(
+    "visual =~ x1 + x2 + x3; visual ~ ageyr + grade",
+    hs,
+    conditional.x = TRUE,
+    verbose = FALSE,
+    nsamp = 50,
+    test = "none"
+  ))
+  int <- get_inlavaan_internal(fit)
+  vars <- c("x1", "x2", "x3", "ageyr", "grade")
+  set.seed(1)
+  all_s <- sampling(fit, type = "all", nsamp = 200, silent = TRUE)
+  expect_setequal(colnames(all_s$observed), vars)
+  expect_setequal(colnames(all_s$latent), c("visual", "ageyr", "grade"))
+  expect_lt(
+    max(abs(colMeans(all_s$observed)[vars] - colMeans(hs[, vars]))),
+    0.3
+  )
+
+  # The implied moments are the joint ones lavaan's conditional pieces give
+  lavimplied <- lavaan::lav_model_implied(
+    lavaan::lav_model_set_parameters(int$lavmodel, all_s$lavaan[1, ])
+  )
+  mom <- implied_block_moments(
+    lavimplied,
+    1L,
+    int$lavmodel,
+    int$lavsamplestats
+  )
+  ov <- lavaan::lavNames(fit, "ov")
+  dimnames(mom$cov) <- list(ov, ov)
+  names(mom$mean) <- ov
+  expect_equal(all_s$implied[[1]]$cov[vars, vars], mom$cov[vars, vars])
+  expect_equal(all_s$implied[[1]]$mean[vars], mom$mean[vars])
+
+  prior_s <- sampling(fit, type = "observed", nsamp = 5, prior = TRUE)
+  expect_setequal(colnames(prior_s), vars)
+})
+
+test_that("Prior observed draws work with an observed outcome", {
+  # Regression test: an observed outcome keeps its residual variance in Psi, so
+  # its row of Theta is zero, and the strict Cholesky factor of Theta rejected
+  # every prior draw. A zero row of Theta no longer rejects a draw.
+  fit_y <- asem(
+    "visual =~ x1 + x2 + x3\n x4 ~ visual",
+    dat,
+    verbose = FALSE,
+    nsamp = 5,
+    vb_correction = FALSE,
+    test = "none",
+    marginal_method = "marggaus"
+  )
+  set.seed(1)
+  expect_no_message(
+    s <- sampling(fit_y, type = "all", nsamp = 8, prior = TRUE)
+  )
+  expect_equal(dim(s$observed), c(8L, 4L))
+  expect_equal(colnames(s$observed), paste0("x", 1:4))
+  expect_true(all(is.finite(s$observed)))
+
+  int <- get_inlavaan_internal(fit_y)
+  x <- coef(fit_y)
+  expect_true(implied_cov_is_pd(x, int))
+  x[["x1~~x1"]] <- -5
+  expect_false(implied_cov_is_pd(x, int))
+
+  # A singular Theta has a root, and only a negative eigenvalue fails
+  expect_equal(
+    tcrossprod(theta_root(diag(c(2, 0)), strict = TRUE)),
+    diag(c(2, 0))
+  )
+  expect_error(theta_root(diag(c(2, -1)), strict = TRUE))
+})
+
+test_that("Composite draws are the weighted sums of their indicators", {
+  skip_on_cran()
+  # Regression test: the implied moments and the observed draws ignored the
+  # composite weights, so the indicators of a composite were uncorrelated with
+  # everything else, and w'x of an observed draw did not match its C.
+  fit_c <- asem(
+    "C <~ x1 + x2 + x3\n x4 ~ C\n x5 ~ C\n x4 ~~ x5",
+    dat,
+    meanstructure = TRUE,
+    verbose = FALSE,
+    nsamp = 5,
+    vb_correction = FALSE,
+    test = "none",
+    marginal_method = "marggaus"
+  )
+  int <- get_inlavaan_internal(fit_c)
+  for (prior in c(FALSE, TRUE)) {
+    s <- sampling(fit_c, type = "all", nsamp = 5, prior = prior, silent = TRUE)
+    for (i in 1:5) {
+      implied <- lavaan::lav_model_implied(
+        lavaan::lav_model_set_parameters(int$lavmodel, s$lavaan[i, ])
+      )
+      expect_equal(s$implied[[i]]$cov, implied$cov[[1]], ignore_attr = TRUE)
+      expect_equal(
+        s$implied[[i]]$mean,
+        as.numeric(implied$mean[[1]]),
+        ignore_attr = TRUE
+      )
+    }
+    w <- cbind(1, s$lavaan[, c("C<~x2", "C<~x3")])
+    wx <- rowSums(w * s$observed[, c("x1", "x2", "x3")])
+    expect_equal(wx, s$latent[, "C"], tolerance = 1e-8, ignore_attr = TRUE)
+  }
+})
+
 ## ----- Two-level fits --------------------------------------------------------
 mod_ml <- "
   level: 1
@@ -300,6 +412,17 @@ test_that("sampling() prior = TRUE covers both levels", {
   im <- sampling(fit_ml, type = "implied", nsamp = 2, prior = TRUE)
   expect_length(im, 2)
   expect_named(im[[1]], c("within", "cluster"))
+
+  # The within covariate x1 has a zero row in Theta
+  obs <- sampling(
+    fit_ml,
+    type = "observed",
+    nsamp = 3,
+    prior = TRUE,
+    silent = TRUE
+  )
+  expect_equal(dim(obs), c(3L, 5L))
+  expect_true(all(is.finite(obs)))
 })
 
 test_that("Single-level draws are unchanged by the two-level path", {
@@ -310,4 +433,13 @@ test_that("Single-level draws are unchanged by the two-level path", {
   im <- sampling(fit, type = "implied", nsamp = 2)
   expect_equal(colnames(im[[1]]$cov), paste0("x", 1:6))
   expect_null(im[[1]]$mean)
+})
+
+test_that("sampling() dispatches on the internal list as on the fit", {
+  int <- get_inlavaan_internal(fit)
+  set.seed(1)
+  from_int <- sampling(int, type = "implied", nsamp = 2)
+  set.seed(1)
+  from_fit <- sampling(fit, type = "implied", nsamp = 2)
+  expect_identical(from_int, from_fit)
 })

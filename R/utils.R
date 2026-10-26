@@ -222,6 +222,18 @@ is_multilevel <- function(lavdata) {
   lavdata@nlevels > 1L
 }
 
+# Random-slope check from a lavModel object. lavaan records the `rv()`
+# modifiers in two slots, one for slopes on an observed within-level
+# covariate and one for slopes on a latent covariate. The slots only exist
+# from lavaan 0.7-2, so guard the access for models built by an older
+# version and stored in a saved fit.
+has_random_slopes <- function(lavmodel) {
+  if (!methods::.hasSlot(lavmodel, "rv.ov")) {
+    return(FALSE) # nocov
+  }
+  length(lavmodel@rv.ov) > 0L || length(lavmodel@rv.lv) > 0L
+}
+
 dmode <- function(x, na.rm = TRUE) {
   if (na.rm) {
     x <- x[!is.na(x)]
@@ -237,6 +249,18 @@ dmode <- function(x, na.rm = TRUE) {
   }
   d <- stats::density(x)
   d$x[which.max(d$y)]
+}
+
+# Mode of a unimodal density f on an interval. The tolerance is relative to the
+# interval width, since the default absolute tolerance of optimize() (about
+# 1e-4) is too coarse for a parameter on a small scale.
+density_mode <- function(f, interval, rel_tol = 1e-8) {
+  stats::optimize(
+    f,
+    interval = interval,
+    maximum = TRUE,
+    tol = rel_tol * diff(range(interval))
+  )$maximum
 }
 
 # Forking (mclapply) is fast and zero-copy, but it is unavailable on Windows

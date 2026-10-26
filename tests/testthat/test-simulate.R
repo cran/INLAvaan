@@ -141,3 +141,64 @@ test_that("simulate() prior predictive replicates stay centred at zero", {
   sims <- simulate(fit_ms, nsim = 40, prior = TRUE, silent = TRUE)
   expect_lt(max(abs(sim_col_means(sims))), 1)
 })
+
+test_that("simulate() works for multigroup models", {
+  skip_on_cran()
+  fit <- acfa(
+    "visual =~ x1 + x2 + x3; textual =~ x4 + x5 + x6",
+    lavaan::HolzingerSwineford1939,
+    group = "school",
+    group.equal = "loadings",
+    verbose = FALSE,
+    nsamp = 3,
+    test = "none"
+  )
+  sims <- simulate(fit, nsim = 2)
+  expect_length(sims, 2)
+  expect_equal(
+    as.numeric(table(sims[[1]]$group)),
+    as.numeric(unlist(fit@SampleStats@nobs))
+  )
+})
+
+test_that("simulate() works for conditional.x fits", {
+  skip_on_cran()
+  fit <- suppressWarnings(asem(
+    "visual =~ x1 + x2 + x3; visual ~ ageyr + grade",
+    na.omit(lavaan::HolzingerSwineford1939),
+    conditional.x = TRUE,
+    verbose = FALSE,
+    nsamp = 20,
+    test = "none"
+  ))
+  set.seed(1)
+  sims <- simulate(fit, nsim = 2, silent = TRUE)
+  expect_length(sims, 2)
+  expect_setequal(names(sims[[1]]), c("x1", "x2", "x3", "ageyr", "grade"))
+})
+
+test_that("simulate() keeps the cluster design of a two-level fit", {
+  skip_on_cran()
+  d <- lavaan::Demo.twolevel[lavaan::Demo.twolevel$cluster %in% 1:24, ]
+  d$cluster <- d$cluster * 10 + 3
+  fit <- asem(
+    "
+    level: 1
+      fw =~ y1 + y2 + y3
+      fw ~ x1
+    level: 2
+      fb =~ y1 + y2 + y3
+      fb ~ w1
+    ",
+    d,
+    cluster = "cluster",
+    verbose = FALSE,
+    test = "none",
+    nsamp = 3
+  )
+  expect_no_warning(sims <- simulate(fit, nsim = 2, seed = 1))
+  expect_equal(sims[[1]]$cluster, d$cluster)
+  # A given sample size still lets lavaan choose the clusters
+  sims_n <- simulate(fit, nsim = 1, seed = 1, sample.nobs = 200)
+  expect_equal(nrow(sims_n[[1]]), 200L)
+})

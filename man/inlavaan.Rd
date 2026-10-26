@@ -31,6 +31,8 @@ inlavaan(
   numerical_grad = FALSE,
   start = NULL,
   cores = NULL,
+  ppp_method = c("onestep", "em"),
+  ppp_nsamp = 250L,
   ...
 )
 }
@@ -54,7 +56,8 @@ explicitly here because lavaan >= 0.7-1 renamed the corresponding
 inherited from there.}
 
 \item{dp}{Default prior distributions for the different types of model
-parameters; a named character vector as returned by \code{\link[=priors_for]{priors_for()}}.}
+parameters; a named character vector as returned by \code{\link[=priors_for]{priors_for()}}. Types
+left out take their default priors.}
 
 \item{test}{Character vector naming the post-estimation quantities to
 compute and store with the fit. The atoms are \code{"ppp"} (posterior
@@ -69,11 +72,18 @@ and the WAIC come from one Taylor pass, so asking for either stores
 both. They run only when asked for, with no time budget. On a model
 the casewise machinery does not support (PML or ordinal data,
 \code{conditional.x = TRUE}, multigroup two-level) they are skipped with a
-warning and the rest of the fit proceeds. The fit records what was
-requested and what was computed (\code{get_inlavaan_internal(fit, "test")});
+warning and the rest of the fit proceeds. For a two-level model the PPP
+follows blavaan: each of \code{ppp_nsamp} posterior draws generates replicate
+data, which are scored against the saturated model (see \code{ppp_method}).
+The two-level PPP is experimental.
+The fit records what was requested and what was computed
+(\code{get_inlavaan_internal(fit, "test")});
 \code{\link[=summary]{summary()}}, \code{\link[=fitmeasures]{fitmeasures()}}, \code{\link[=deviance]{deviance()}}, \code{\link[=logLik]{logLik()}} and \code{\link[=timing]{timing()}}
 report only what was computed. \code{\link[=add_loo]{add_loo()}} stores the LOO and WAIC
-post hoc; \code{\link[=loo]{loo()}} and \code{\link[=waic]{waic()}} compute on demand.}
+post hoc; \code{\link[=loo]{loo()}} and \code{\link[=waic]{waic()}} compute on demand. For a random-slope
+model \code{"ppp"} is dropped, with a warning when it was asked for and a
+message otherwise (see the Random slopes section of \code{\link[=inlavaan]{inlavaan()}}).
+\code{"dic"}, \code{"loo"} and \code{"waic"} are unaffected.}
 
 \item{vb_correction}{Logical indicating whether to apply a variational Bayes
 correction for the posterior mean vector of estimates. Defaults to \code{TRUE}.}
@@ -101,12 +111,12 @@ approximation), and \code{"sampling"} (sampling from the joint Laplace
 approximation).}
 
 \item{marginal_correction}{Which type of correction to use when fitting the
-skew-normal or two-piece Gaussian marginals. \code{"hessian"} computes the full
-\code{"shortcut"} (default) computes only diagonals via central differences
-(full z-trace plus Schur complement correction), \code{"shortcut_fd"} is the
-same formula using forward differences (roughly half the cost, less
-accurate), \code{"hessian"} computes the full Hessian-based correction (slow),
-and \code{"none"} (or \code{FALSE}) applies no correction.}
+skew-normal or two-piece Gaussian marginals. \code{"shortcut"} (default)
+computes only diagonals via central differences (full z-trace plus Schur
+complement correction), \code{"shortcut_fd"} is the same formula using forward
+differences (roughly half the cost, less accurate), \code{"hessian"} computes
+the full Hessian-based correction (slow), and \code{"none"} (or \code{FALSE})
+applies no correction.}
 
 \item{nsamp}{The number of samples to draw for all sampling-based approaches
 (including posterior sampling for model fit indices).}
@@ -196,6 +206,20 @@ cores -- forked via \code{\link[parallel:mclapply]{parallel::mclapply()}} where 
 PSOCK cluster (separate R processes) inside IDE R sessions (RStudio,
 Positron) and on Windows.}
 
+\item{ppp_method}{How the PPP of a two-level model scores the observed and
+the replicate data against the saturated model. \code{"onestep"} (default)
+takes one Fisher-scoring step from the moments of each posterior draw
+towards the saturated fit, and fits by EM where the step would leave the
+valid covariance matrices (with few clusters or a small between
+variance). \code{"em"} always fits the saturated model by EM, as blavaan does.
+Fits with \code{missing = "ml"} always use \code{"em"}. Ignored for single-level
+models.}
+
+\item{ppp_nsamp}{The number of posterior draws, each with one replicate data
+set, that the PPP of a two-level model uses. Defaults to \code{250}, and is
+capped at \code{nsamp}. Draws that cannot be scored are left out, with a
+warning. Ignored for single-level models.}
+
 \item{...}{Additional arguments to be passed to the \link[lavaan:lavaan]{lavaan} model fitting
 function.}
 }
@@ -222,6 +246,92 @@ reports the realised error per fit as \code{vb_mcse_sigma} per parameter and
 \code{vb_method = "gauss_hermite"} removes the random node set altogether; see
 the \code{vb_method} argument.
 }
+\section{Random slopes}{
+
+Wrapping a level-1 regression coefficient in lavaan's \code{rv()} modifier
+turns it into a level-2 latent variable -- a random slope -- which can
+then be given a mean, a variance and cross-level regressions like any
+other level-2 latent variable:
+
+\if{html}{\out{<div class="sourceCode">}}\preformatted{level: 1
+  fw =~ y1 + y2 + y3
+  fw ~ rv('s1')*x1
+level: 2
+  fb =~ y1 + y2 + y3
+  s1 ~ w1
+  s1 ~~ s1
+  s1 ~ 1
+}\if{html}{\out{</div>}}
+
+The slope's variance and intercept are added automatically, so in
+practice only the cross-level regression \code{s1 ~ w1} need be written out.
+\code{\link[=summary]{summary()}} marks the level-1 carrier row as \code{x1 (s1)}: that row is
+fixed at zero, the slope itself being reported under Level 2.
+
+The likelihood takes one of two routes. When the covariate carrying the
+slope is observed and purely within-cluster, the slope integrates out in
+closed form. When it is latent, or split across both levels (the same
+variable entering at level 1 and at level 2), the integral is done by
+Gauss-Hermite quadrature instead; that route warns at fit time and is
+governed by \code{integration.ngh}, passed through to lavaan. The node count
+is an accuracy setting as much as a cost setting, so give every fit that
+is to be compared with another the same \code{integration.ngh}.
+
+A model with observed exogenous covariates requires \code{fixed.x = TRUE}
+(the default): the likelihood is the density of the outcomes \emph{given}
+those covariates, so their own means and (co)variances are unidentified
+and would be reported back as their priors. A \code{fixed.x = FALSE} fit is
+refused. A model whose covariates are all latent or modelled has nothing
+to hold fixed, and lavaan reports \code{fixed.x = FALSE} for it of its own
+accord; such a fit is accepted as it stands.
+
+Equality constraints work as for other models, except that covariances
+cannot be held equal. Composites (\verb{<~}) cannot be combined with random
+slopes yet.
+
+A random-slope model implies no single within-cluster covariance matrix:
+the covariance of the outcomes depends on the covariate values.
+\code{\link[=fitted]{fitted()}} and \code{\link[=residuals]{residuals()}} therefore use the implied moments averaged
+over the covariates, which include the mean and the variance of each
+slope, or with \code{per_cluster = TRUE} the moments of each cluster at its
+own covariate values (closed-form route only). \code{\link[=standardisedsolution]{standardisedsolution()}}
+and the standardised columns and R-square of \code{\link[=summary]{summary()}} are scaled by
+the averaged variances. The carrier row \code{x1 (s1)} then gives the
+standardised mean slope, and the slope's own rows are on the same
+standardised scale. An outcome observed at level 1 only, whose slope
+covariate has a non-zero mean, has no place in lavaan's two-level layout,
+and these outputs abort for it.
+
+\code{\link[=simulate]{simulate()}} draws each cluster's slopes and other level-2 effects and
+then its outcomes, at the cluster's own covariates (closed-form route
+only). \code{\link[=sampling]{sampling()}} gives latent, observed and implied draws. \code{\link[=predict]{predict()}}
+gives \code{type = "lv"} and, on the closed-form route, the cluster-specific
+\code{"yhat"} and \code{"ypred"} from the empirical Bayes random effects, while
+\code{fitted(type = "casewise")} gives the outcomes' means given the
+covariates. \code{\link[=bfit_indices]{bfit_indices()}} scales the Bayesian fit indices against the
+unrestricted random-coefficient model with the same random-effects design,
+because a saturated model does not exist here. This reference is
+INLAvaan's own construction (closed-form route only).
+
+The posterior predictive p-value (\code{test = "ppp"}) is dropped, because a
+random-slope model has no saturated model to score replicate data against.
+What aborts with an explanation: the residual types scaled by standard
+errors, \code{predict(type = "ymis")}, and \code{loo(type = "loso")}, which would
+need a cluster's sufficient statistics downdated by one row.
+
+The model-comparison side works throughout. \code{\link[=compare]{compare()}} reports the
+marginal likelihood, Bayes factors, the DIC and its \eqn{p_D}, and \code{\link[=loo]{loo()}}
+and \code{\link[=waic]{waic()}} score the fit leave-one-cluster-out on the conditional
+likelihood.
+
+To ask whether there is a random slope at all, compare the fit with the
+fixed-slope model (\code{fw ~ x1} at level 1) using \code{\link[=compare]{compare()}}. On the
+closed-form route, fixing the slope variance at zero (\code{s1 ~~ 0*s1}) and
+dropping any cross-level regression on the slope gives the same model.
+Keeping \code{s1 ~ w1} gives a cross-level interaction model instead. The
+quadrature route refuses a slope variance fixed at zero.
+}
+
 \examples{
 # The Holzinger and Swineford (1939) example
 HS.model <- "

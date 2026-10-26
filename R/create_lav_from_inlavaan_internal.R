@@ -4,6 +4,12 @@ create_lav_from_inlavaan_internal <- function(fit0, fit_inlv) {
   fit0@Model <- lavaan::lav_model_set_parameters(fit0@Model, x)
   # fit0@Model@estimator <- "BAYES"
   fit0@implied <- lavaan::lav_model_implied(fit0@Model)
+  if (any(fit_inlv$partable$op == ":=")) {
+    fit0@Model@def.function <- def_function_in_pt_order(
+      fit0@Model@def.function,
+      fit_inlv$partable$lhs[fit_inlv$partable$op == ":="]
+    )
+  }
 
   ## ----- Update ParTable slot ------------------------------------------------
 
@@ -15,6 +21,22 @@ create_lav_from_inlavaan_internal <- function(fit0, fit_inlv) {
   pt <- fit_inlv$partable
   pt$est[pt$free > 0] <- x[pt$free[pt$free > 0]]
   pt$se[pt$free > 0] <- SD[pt$free[pt$free > 0]]
+
+  # Composite variances and intercepts are functions of the weights, which the
+  # model matrices already hold at x. Read them back, as lavaan does after its
+  # own fit, so that the parameter table and the model matrices agree (lavaan's
+  # standardisation and R-square divide one by the other). Their posterior SDs
+  # come from the draws.
+  comp_rows <- composite_derived_rows(pt)
+  if (length(comp_rows) > 0L) {
+    est_user <- lavaan::lav_model_get_parameters(
+      fit0@Model,
+      type = "user",
+      extra = FALSE
+    )
+    pt$est[comp_rows] <- est_user[comp_rows]
+    pt$se[comp_rows] <- fit_inlv$summary[pt$names[comp_rows], "SD"]
+  }
 
   pt$par <- pt$parstart
   pt$par[pt$free > 0] <- fit_inlv$theta_star[pt$free[pt$free > 0]]
@@ -56,6 +78,8 @@ create_lav_from_inlavaan_internal <- function(fit0, fit_inlv) {
   pt$ginv_prime2 <- sapply(pt$ginv_prime2, as_fun_string)
 
   fit0@ParTable <- pt
+  # lavaan restores the column names from this cache, by position
+  fit0@pta$names <- names(pt)
 
   ## ----- Update Options slot -------------------------------------------------
   optim_method <- fit_inlv$optim_method
@@ -141,8 +165,13 @@ create_lav_from_inlavaan_internal <- function(fit0, fit_inlv) {
   fit0@loglik <- list()
 
   ## ----- Update vcov slot ----------------------------------------------------
+  # vcov_x has one row per free index, but lavaan (like coef()) keeps one row
+  # per free partable row, so parameters held equal repeat their shared row.
+  free_idx <- pt$free[pt$free > 0]
+  vcov_x <- fit_inlv$vcov_x[free_idx, free_idx, drop = FALSE]
+  dimnames(vcov_x) <- rep(list(pt$names[pt$free > 0]), 2)
   fit0@vcov <- list(
-    vcov = fit_inlv$vcov_x,          # Sample-based vcov (lavaan parameterisation)
+    vcov = vcov_x, # Sample-based vcov (lavaan parameterisation)
     vcov_theta = fit_inlv$Sigma_theta # Laplace vcov (theta parameterisation)
   )
 
@@ -168,4 +197,14 @@ create_lav_from_inlavaan_internal <- function(fit0, fit_inlv) {
     inlavaan_internal = fit_inlv #[!grepl("lav", names(fit_inlv))]
   )
   fit0
+}
+
+# lavaan sorts the := definitions into dependency order inside def.function()
+# but writes its output back to the := rows by position, so a definition that
+# uses a later one lands on the wrong row (e.g. in standardizedSolution()).
+# Returning the definitions in partable order keeps every row on its own value.
+def_function_in_pt_order <- function(def_function, def_lhs) {
+  force(def_function)
+  force(def_lhs)
+  function(.x., ...) def_function(.x., ...)[def_lhs]
 }

@@ -22,12 +22,18 @@
 \item{type}{Character string specifying the type of prediction:
 \describe{
 \item{\code{"lv"}}{(default) Posterior draws of latent variable scores
-\eqn{\eta | y, \theta}.}
+\eqn{\eta | y, \theta}. A composite (\code{<~}) score is the weighted
+sum of its indicators (centred without a mean structure).}
 \item{\code{"yhat"}, \code{"ov"}}{Predicted means for observed variables
-\eqn{E(y | \eta, \theta) = \nu + \Lambda \eta}; no residual noise.}
+\eqn{E(y | \eta, \theta) = \nu + \Lambda \eta}; no residual noise. An
+observed outcome is predicted from its regressors, and an indicator of
+a composite from the composite.}
 \item{\code{"ypred"}, \code{"ydist"}}{Predicted observed values including
 residual noise \eqn{y = \nu + \Lambda \eta + \varepsilon},
-\eqn{\varepsilon \sim N(0, \Theta)}.}
+\eqn{\varepsilon \sim N(0, \Theta)}, with the residual variances that
+\code{lavInspect(fit, "theta")} reports (observed outcomes included,
+observed covariates excluded), except that the drawn indicators of a
+composite keep its weighted sum.}
 \item{\code{"ymis"}, \code{"ovmis"}}{Imputed values for missing
 observations, drawn from the conditional distribution
 \eqn{y_{mis} | y_{obs}, \theta}.}
@@ -37,8 +43,18 @@ observations, drawn from the conditional distribution
 predictions are computed for \code{newdata} rather than the original
 training data. Not supported for \code{type = "ymis"}.}
 
-\item{level}{Integer; for \code{type = "lv"} in multilevel models, specifies
-whether level 1 or level 2 latent variables are desired (default \code{1L}).}
+\item{level}{Integer; for \code{type = "lv"} in two-level models, specifies
+whether level 1 or level 2 latent variables are desired (default \code{1L}).
+Other types ignore it: for two-level models, \code{"yhat"} and
+\code{"ypred"} give the total within plus between prediction, and a
+\code{"ypred"} draw keeps its cluster's between-level values, so only the
+observation-level residuals are new. For a random-slope model (see
+\code{\link[=inlavaan]{inlavaan()}}), each level 2 latent variable, slopes included, is drawn on
+its own, so draws of different variables are independent given the
+parameters, and level 1 values are conditional means. Its
+\code{"yhat"} and \code{"ypred"} use these empirical Bayes values
+(closed-form route only), and \code{"ypred"} adds the level-1 and
+between-level residuals.}
 
 \item{nsamp}{Integer; number of posterior samples to use for prediction.
 Defaults to \code{1000}.}

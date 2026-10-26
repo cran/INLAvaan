@@ -18,6 +18,8 @@
 #'   for each observation.
 #' @param labels Logical. Attach variable names to the output. Default
 #'   \code{TRUE}.
+#' @param per_cluster Logical. For a random-slope model, return the residuals
+#'   of each cluster instead of the averaged ones. Default \code{FALSE}.
 #' @param ... Currently unused.
 #'
 #' @returns For moment-based \code{type}s, a list with elements
@@ -32,6 +34,15 @@
 #' are the observed statistics minus the posterior-mean model-implied
 #' statistics (mirroring \pkg{blavaan}, which likewise inherits lavaan's
 #' \code{residuals()} without overriding it).
+#'
+#' For a model with random slopes (lavaan's \code{rv()}), the residuals
+#' compare the sample moments with the averaged moments of [fitted()]. With
+#' \code{per_cluster = TRUE}, they compare each cluster's sample mean and
+#' within-cluster covariance with its expected ones. A covariance of two
+#' variables observed together in fewer than two rows of a cluster is
+#' \code{NA}. The raw and correlation types are available, and
+#' \code{type = "casewise"} gives the observed values minus the outcomes'
+#' means given the covariates (closed-form route only).
 #'
 #' @seealso [fitted()], [predict()], [fitMeasures()][lavaan::fitMeasures]
 #'
@@ -60,16 +71,39 @@
 #' @name residuals
 #' @aliases residuals,INLAvaan-method
 #' @export
-setMethod("residuals", "INLAvaan", function(object, type = "raw", labels = TRUE, ...) {
-  # Delegate to lavaan's implementation so the output structure (moments,
-  # casewise) stays identical; the posterior means already live in the object.
-  lavaan::residuals(as(object, "lavaan"), type = type, labels = labels, ...)
-})
+setMethod(
+  "residuals",
+  "INLAvaan",
+  function(object, type = "raw", labels = TRUE, ..., per_cluster = FALSE) {
+    check_rs_moments(object, "residuals", type)
+    check_per_cluster(object, per_cluster)
+    if (has_random_slopes(object@Model)) {
+      return(rs_residuals(
+        object,
+        type = type,
+        labels = labels,
+        per_cluster = per_cluster
+      ))
+    }
+    # Delegate to lavaan's implementation so the output structure (moments,
+    # casewise) stays identical; the posterior means already live in the object.
+    lavaan::residuals(as(object, "lavaan"), type = type, labels = labels, ...)
+  }
+)
 
 #' @importFrom stats resid
 #' @rdname residuals
 #' @aliases resid,INLAvaan-method
 #' @export
-setMethod("resid", "INLAvaan", function(object, type = "raw", ...) {
-  lavaan::resid(as(object, "lavaan"), type = type, ...)
-})
+setMethod(
+  "resid",
+  "INLAvaan",
+  function(object, type = "raw", ..., per_cluster = FALSE) {
+    check_rs_moments(object, "resid", type)
+    check_per_cluster(object, per_cluster)
+    if (has_random_slopes(object@Model)) {
+      return(rs_residuals(object, type = type, per_cluster = per_cluster))
+    }
+    lavaan::resid(as(object, "lavaan"), type = type, ...)
+  }
+)

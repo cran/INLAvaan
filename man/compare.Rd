@@ -55,6 +55,14 @@ of parameters (when the fit computed the DIC, i.e. \code{test} included
 \code{"dic"} during fitting; the default \code{"standard"} does).
 }
 
+Fit all models with the same \code{vb_correction} setting. \code{compare()} warns
+when they differ.
+
+Marginal likelihoods, Bayes factors and DIC of fits with composites (\verb{<~})
+treat the indicator (co)variances that lavaan fixes at their sample values
+as known, so \code{compare()} warns unless all models fix the same ones. The LOO
+comparison (\code{loo = TRUE}) remains valid across such models.
+
 Set \code{fit.measures} to a character vector of measure names (anything
 returned by \link[lavaan:fitMeasures]{fitMeasures()}) to append extra columns.
 Use \code{fit.measures = "all"} to include every available measure.
@@ -87,6 +95,13 @@ conditional scores require only matching outcome variables -- covariate
 sets may differ, which is the covariate-selection setting. Stored LOO
 results (\code{test} including \code{"loo"} or \code{"full"}, or \code{\link[=add_loo]{add_loo()}}) are
 reused.
+
+When any of the models has random slopes (lavaan's \code{rv()} modifier; see
+\code{\link[=inlavaan]{inlavaan()}}), \code{compare()} aborts unless all the models were fitted with
+\code{fixed.x = TRUE}, score the same outcome variables, and share one
+\code{integration.ngh} on the quadrature route. Their covariates may differ. The
+fixed-slope model (the same path without \code{rv()}) is a valid comparator for
+testing a random slope.
 
 \code{anova()} is disabled for \code{INLAvaan} fits -- there is no direct Bayesian
 analogue of the classical likelihood-ratio test -- and points here instead.

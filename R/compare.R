@@ -19,6 +19,14 @@
 #'     of parameters (when the fit computed the DIC, i.e. `test` included
 #'     `"dic"` during fitting; the default `"standard"` does).
 #'
+#' Fit all models with the same `vb_correction` setting. `compare()` warns
+#' when they differ.
+#'
+#' Marginal likelihoods, Bayes factors and DIC of fits with composites (`<~`)
+#' treat the indicator (co)variances that lavaan fixes at their sample values
+#' as known, so `compare()` warns unless all models fix the same ones. The LOO
+#' comparison (`loo = TRUE`) remains valid across such models.
+#'
 #' Set `fit.measures` to a character vector of measure names (anything
 #' returned by [fitMeasures()][lavaan::fitMeasures]) to append extra columns.
 #' Use `fit.measures = "all"` to include every available measure.
@@ -51,6 +59,13 @@
 #' sets may differ, which is the covariate-selection setting. Stored LOO
 #' results (`test` including `"loo"` or `"full"`, or [add_loo()]) are
 #' reused.
+#'
+#' When any of the models has random slopes (lavaan's `rv()` modifier; see
+#' [inlavaan()]), `compare()` aborts unless all the models were fitted with
+#' `fixed.x = TRUE`, score the same outcome variables, and share one
+#' `integration.ngh` on the quadrature route. Their covariates may differ. The
+#' fixed-slope model (the same path without `rv()`) is a valid comparator for
+#' testing a random slope.
 #'
 #' `anova()` is disabled for `INLAvaan` fits -- there is no direct Bayesian
 #' analogue of the classical likelihood-ratio test -- and points here instead.
@@ -102,7 +117,7 @@ setMethod(
       ]
     )
 
-    modnames <- vapply(model_exprs, deparse, character(1))
+    modnames <- vapply(model_exprs, model_expr_name, character(1))
 
     compare_impl(
       models = model_objs,
@@ -112,6 +127,12 @@ setMethod(
     )
   }
 )
+
+# A model's name in the comparison table: the expression that gave it, on one
+# line even when it is a long call
+model_expr_name <- function(expr) {
+  paste(trimws(deparse(expr)), collapse = " ")
+}
 
 #' @exportS3Method compare inlavaan_internal
 compare.inlavaan_internal <- function(
@@ -133,7 +154,7 @@ compare.inlavaan_internal <- function(
     ]
   )
 
-  modnames <- vapply(model_exprs, deparse, character(1))
+  modnames <- vapply(model_exprs, model_expr_name, character(1))
 
   compare_impl(
     models = model_objs,
@@ -172,6 +193,8 @@ compare_impl <- function(
   DIC_vec <- vapply(internals, function(m) m$DIC$dic %||% NA_real_, numeric(1))
   pD_vec <- vapply(internals, function(m) m$DIC$pD %||% NA_real_, numeric(1))
 
+  check_rs_comparable(internals, modnames)
+
   # Marginal likelihoods, Bayes factors, and DIC are only comparable
   # between fits with the same mean treatment: without a mean structure
   # the saturated means carry an improper flat prior whose arbitrary
@@ -200,6 +223,52 @@ compare_impl <- function(
        log-likelihoods, Bayes factors, and DIC are not comparable across
        the two mean treatments (the flat-prior normalisation of the
        saturated means does not cancel).",
+      hint
+    ))
+  }
+
+  # The VB correction adds its location term to the marginal log-likelihood
+  # and moves the DIC plug-in point and the LOO expansion point to the
+  # shifted centre. A fit with the correction and a fit without it differ
+  # partly in the approximation, and that part would read as a difference
+  # between the models.
+  vb_vec <- vapply(
+    internals,
+    function(m) !is.null(m$vb$correction) && !anyNA(m$vb$correction),
+    logical(1)
+  )
+  if (length(unique(vb_vec)) > 1L) {
+    cli_warn(c(
+      "Comparing fits with and without the VB correction: their marginal
+       log-likelihoods, DIC, and LOO use different approximations, so the
+       differences are not only differences between the models.",
+      "i" = "Fit all models with the same {.arg vb_correction} setting."
+    ))
+  }
+
+  # The composite indicator (co)variances that lavaan fixes at their sample
+  # values are a plug-in of the data, not parameters, so the marginal likelihood
+  # and the DIC of a fit with composites condition on them. That cancels only
+  # between fits that fix the same ones. The LOO recomputes them without each
+  # unit, so it compares across such fits.
+  t_keys <- lapply(internals, composite_t_key)
+  if (length(unique(t_keys)) > 1L) {
+    hint <- if (isTRUE(loo)) {
+      c(
+        "i" = "Interpret only the ELPD columns, which recompute those
+         (co)variances without each unit."
+      )
+    } else {
+      c(
+        "i" = "Use {.code compare(..., loo = TRUE)} for a comparison that does
+         not depend on them."
+      )
+    }
+    cli_warn(c(
+      "Comparing fits that do not fix the same composite indicator
+       (co)variances at their sample values: marginal log-likelihoods, Bayes
+       factors, and DIC treat those as known, so they are comparable only
+       between models with the same composites.",
       hint
     ))
   }
@@ -309,9 +378,21 @@ compare_impl <- function(
       character(1)
     )
     if (length(unique(flavs)) > 1L) {
+      # A composite fit without fixed covariates is joint whatever its fixed.x
+      # setting, so the usual hint would not explain the mismatch.
+      hint <- if (any(lengths(t_keys) > 0L & flavs == "joint")) {
+        c(
+          "i" = "A fit with composites is scored jointly: its composite
+           indicators are data, not fixed covariates.",
+          "i" = "Fit the models with fixed covariates with
+           {.code fixed.x = FALSE}."
+        )
+      } else {
+        c("i" = "Fit all models with the same {.code fixed.x} setting.")
+      }
       cli_abort(c(
         "LOO comparison cannot mix joint and conditional scores.",
-        "i" = "Fit all models with the same {.code fixed.x} setting."
+        hint
       ))
     }
 
@@ -319,6 +400,10 @@ compare_impl <- function(
     # variable sets must match; conditional scores are densities over the
     # outcomes only, so covariate sets may differ but the outcomes must match
     score_vars <- lapply(internals, function(m) {
+      spec <- rs_spec(m)
+      if (!is.null(spec)) {
+        return(sort(unique(rs_scored_sets(m, spec)$resp)))
+      }
       ov <- sort(unique(unlist(m$lavdata@ov.names)))
       if (flavs[1L] == "conditional") {
         setdiff(ov, unlist(m$lavdata@ov.names.x))
@@ -421,6 +506,124 @@ compare_impl <- function(
   }
   class(out) <- c("compare.inlavaan_internal", class(out))
   out
+}
+
+# The composite indicator (co)variances a fit fixes at their sample values, as
+# sorted keys of group, variable pair and value. Empty for a fit without them.
+composite_t_key <- function(int) {
+  t_fixed <- composite_fixed_t(int$lavmodel, int$partable, int$lavdata)
+  if (is.null(t_fixed)) {
+    return(character(0L))
+  }
+  group_label <- int$lavdata@group.label
+  keys <- lapply(seq_along(t_fixed), function(g) {
+    e <- t_fixed[[g]]
+    ov <- int$lavdata@ov.names[[g]]
+    lhs <- ov[e$rc[, 1L]]
+    rhs <- ov[e$rc[, 2L]]
+    paste(
+      if (length(group_label) >= g) group_label[g] else "",
+      pmin(lhs, rhs),
+      pmax(lhs, rhs),
+      signif(int$lavmodel@GLIST[[e$mm]][e$pos], 8)
+    )
+  })
+  sort(unique(unlist(keys)))
+}
+
+# ---- Random-slope comparability ----------------------------------------------
+
+# A random-slope likelihood is the density of the outcomes *given* the
+# exogenous covariates, as for any fixed.x fit (see rs_scored_sets()), so fits
+# may differ in their covariates as they may without random slopes. The
+# conditions below are what puts a table of such fits on one scale, and each
+# of them aborts: a Bayes factor between quantities on different scales is not
+# a weaker statement but a meaningless one. A comparison of ordinary fits is
+# untouched.
+check_rs_comparable <- function(internals, modnames) {
+  specs <- lapply(internals, rs_spec)
+  if (all(vapply(specs, is.null, logical(1)))) {
+    return(invisible(NULL))
+  }
+
+  # (a) Are the covariates conditioned on, or modelled? A fixed.x = FALSE fit
+  # scores them as outcomes, so its log-likelihood covers more variables.
+  # As at fit time, a model with no observed exogenous variables carries
+  # `fixed.x = FALSE` without anyone having asked for it, so the syntax-level
+  # set decides. The stored partable is lavaan's own with extra columns,
+  # which lavNames() reads unchanged.
+  fixed_x <- vapply(
+    internals,
+    function(m) {
+      isTRUE(m$lavmodel@fixed.x) ||
+        length(lavaan::lavNames(m$partable, "ov.x")) == 0L
+    },
+    logical(1)
+  )
+  if (!all(fixed_x)) {
+    cli_abort(
+      c(
+        "Cannot compare a random-slope fit with a {.code fixed.x = FALSE}
+         fit: {.val {modnames[!fixed_x]}}.",
+        "x" = "The random-slope likelihood conditions on the exogenous
+               covariates, while a {.code fixed.x = FALSE} fit scores them as
+               outcomes, so the marginal log-likelihoods and DICs are not on
+               one scale.",
+        "i" = "Refit with {.code fixed.x = TRUE}."
+      ),
+      class = "inlavaan_rs_compare_fixedx"
+    )
+  }
+
+  # (b) Which variables are scored? Everything a fit does not condition on:
+  # the outcomes, and the between-only endogenous variables it models.
+  resp <- lapply(seq_along(internals), function(k) {
+    v <- if (is.null(specs[[k]])) {
+      setdiff(
+        unlist(internals[[k]]$lavdata@ov.names),
+        unlist(internals[[k]]$lavdata@ov.names.x)
+      )
+    } else {
+      rs_scored_sets(internals[[k]], specs[[k]])$resp
+    }
+    sort(unique(v[nzchar(v)]))
+  })
+  same <- vapply(resp, identical, logical(1), y = resp[[1L]])
+  if (!all(same)) {
+    k <- which(!same)[1L]
+    cli_abort(
+      c(
+        "Cannot compare fits that score different variables.",
+        "x" = "{.val {modnames[1L]}} scores {.val {resp[[1L]]}} but
+               {.val {modnames[k]}} scores {.val {resp[[k]]}}, so the
+               marginal log-likelihoods and DICs are densities of different
+               things.",
+        "i" = "Keep the same outcome variables in every model."
+      ),
+      class = "inlavaan_rs_compare_resp"
+    )
+  }
+
+  # (c) How accurately is the slope integrated out? Route B replaces the
+  # closed form with Gauss-Hermite quadrature, whose error moves the
+  # log-likelihood by an amount comparable with the differences being read
+  # off the table.
+  ngh <- unlist(lapply(specs, function(s) {
+    if (is.null(s) || s$route != "B") NULL else as.integer(s$ngh)
+  }))
+  if (length(unique(ngh)) > 1L) {
+    cli_abort(
+      c(
+        "Cannot compare Gauss-Hermite random-slope fits integrated with
+         different node counts: {.val {sort(unique(ngh))}}.",
+        "x" = "The quadrature error moves the log-likelihood by an amount
+               comparable with the differences being interpreted.",
+        "i" = "Give every fit the same {.arg integration.ngh}."
+      ),
+      class = "inlavaan_rs_compare_ngh"
+    )
+  }
+  invisible(NULL)
 }
 
 #' @exportS3Method print compare.inlavaan_internal

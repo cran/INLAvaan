@@ -74,21 +74,23 @@ standardizedSolution(
 \arguments{
 \item{object}{An object of class \link{INLAvaan}.}
 
-\item{type}{If \code{"std.lv"}, the standardized estimates are based
+\item{type}{Character (dots and underscores are interchangeable:
+\code{"std.all"} and \code{"std_all"} are the same type).
+If \code{"std_lv"}, the standardized estimates are based
 on the variances of the (continuous) latent variables only.
-If \code{"std.all"}, the standardized estimates are based
+If \code{"std_all"}, the standardized estimates are based
 on the variances of both (continuous) observed and latent variables.
-If \code{"std.nox"}, the standardized estimates are based
+If \code{"std_nox"}, the standardized estimates are based
 on the variances of both (continuous) observed and latent variables,
-but not the variances of exogenous covariates. Note that \code{"std.nox"}
-only differs from \code{"std.all"} if \code{fixed.x = TRUE}; if
-\code{fixed.x = FALSE}, the exogenous covariates are treated as random
+but not the variances of exogenous covariates. Note that \code{"std_nox"}
+only differs from \code{"std_all"} if \code{fixed_x = TRUE}; if
+\code{fixed_x = FALSE}, the exogenous covariates are treated as random
 variables (and standardized) just like any other variable, and a warning
 is issued.
 Alternatively, \code{type} may be a vector of (observed) variable names
 (for example \code{type = c("x1", "x2")}); in that case only the parameters
 involving these variables are standardized (the other observed variables are
-left unstandardized). This is a generalization of \code{"std.nox"}, where the
+left unstandardized). This is a generalization of \code{"std_nox"}, where the
 (observed) exogenous \code{x} variables are the ones left unstandardized.}
 
 \item{se}{Logical. If TRUE, standard errors for the standardized parameters
@@ -133,6 +135,15 @@ A \code{data.frame} containing standardised model parameters.
 }
 \description{
 Standardised solution of a latent variable model
+}
+\details{
+For a model with random slopes (lavaan's \code{rv()}), the estimates are scaled
+by the implied variances averaged over the covariates, which include the
+mean and the variance of each slope. The level-1 row that carries a slope
+gives the standardised mean slope. The slope's own rows are on the same
+standardised-slope scale: its intercept is a standardised slope, and its
+(residual) variance is the share of the outcome's level-1 variance that the
+slope's (residual) variation adds.
 }
 \examples{
 HS.model <- "

@@ -25,11 +25,19 @@
 #' (`sample_params_prior` / `sample_params_posterior`), so the prior
 #' specification is consistent.
 #'
+#' A two-level dataset keeps the clusters of the data, with their labels and
+#' sizes, unless `sample.nobs` is given. For a random-slope model (closed-form route only),
+#' each cluster keeps its own covariates and size, its slopes and other
+#' level-2 effects are drawn first, and then its outcomes. `sample.nobs` is
+#' not available. Other models draw their covariates from their fitted
+#' moments.
+#'
 #' @param object An object of class [INLAvaan].
 #' @param nsim Number of replicate datasets to generate (default 1).
 #' @param seed Optional random seed (passed to [set.seed()]).
-#' @param sample.nobs Number of observations per dataset. Defaults to the
-#'   sample size of the original data.
+#' @param sample.nobs Number of observations per dataset, per group for
+#'   multigroup models (a single number is used for every group). Defaults to
+#'   the sample size of the original data.
 #' @param prior Logical. When `TRUE`, parameters are drawn from the prior;
 #'   when `FALSE` (default), from the posterior.
 #' @param samp_copula Logical. When `TRUE` (default) and `prior = FALSE`,
@@ -77,8 +85,38 @@ setMethod(
     pt <- int$partable
     lavmodel <- int$lavmodel
 
+    # lavaan's simulateData() has no random-slope generator
+    if (has_random_slopes(lavmodel)) {
+      return(rs_simulate(
+        object,
+        nsim,
+        sample.nobs,
+        prior,
+        samp_copula,
+        silent
+      ))
+    }
+
     xnames <- pt$names[pt$free > 0 & !duplicated(pt$free)]
-    n <- if (is.null(sample.nobs)) object@SampleStats@ntotal else sample.nobs
+    # A two-level fit keeps its own cluster design unless a sample size is
+    # given. Without a cluster index lavaan invents a balanced one.
+    sim_ml_args <- list()
+    if (int$lavdata@nlevels > 1L) {
+      if (is.null(sample.nobs)) {
+        cl_idx <- lapply(int$lavdata@Lp, function(lp) lp$cluster.idx[[2L]])
+        sim_ml_args$cluster_idx <- if (length(cl_idx) == 1L) {
+          cl_idx[[1L]]
+        } else {
+          cl_idx
+        }
+      }
+    }
+    # One sample size per group, as lavaan::simulateData() needs
+    n <- if (is.null(sample.nobs)) {
+      unlist(object@SampleStats@nobs)
+    } else {
+      rep_len(sample.nobs, lavmodel@ngroups)
+    }
 
     # Draw a generous batch of parameters upfront
     oversample <- nsim * 5L
@@ -124,9 +162,9 @@ setMethod(
       implied <- lavaan::lav_model_implied(lavmodel_x)
 
       all_pd <- TRUE
-      for (g in seq_along(implied$cov)) {
+      for (b in seq_len(lavmodel@nblocks)) {
         eigs <- eigen(
-          implied$cov[[g]],
+          implied_block_moments(implied, b, lavmodel, int$lavsamplestats)$cov,
           symmetric = TRUE,
           only.values = TRUE
         )$values
@@ -141,10 +179,23 @@ setMethod(
 
       # Generate data via lavaan's simulateData using the partable
       pt_sim <- lavaan::lav_partable_complete(lavaan::partable(object))
-      pt_sim$est[pt_sim$free > 0] <- as.numeric(x_draw)
+      # x_draw holds one value per free index, shared by equal parameters
+      pt_sim$est[pt_sim$free > 0] <- as.numeric(x_draw)[
+        pt_sim$free[pt_sim$free > 0]
+      ]
+      # simulateData() fails on a conditional.x partable. Without the exo flags
+      # it draws the covariates from their fixed moments, as for other fits.
+      if (isTRUE(lavmodel@conditional.x)) {
+        pt_sim$exo[] <- 0L
+      }
 
+      # The := rows play no part in the data, so a draw where one is undefined
+      # is fine.
       dat <- tryCatch(
-        lavaan::simulateData(pt_sim, sample.nobs = n),
+        muffle_ml_sim_warning(muffle_nan_warnings(do.call(
+          lavaan::simulateData,
+          c(list(pt_sim, sample.nobs = n), sim_ml_args)
+        ))),
         error = function(e) NULL
       )
       if (is.null(dat)) {
@@ -167,13 +218,13 @@ setMethod(
         names(ybar) <- int$lavdata@ov.names[[1L]]
         mu <- ybar
         if (marginalised_means_active(lavmodel)) {
-          Sig <- implied$cov[[1L]]
-          ch <- tryCatch(chol(Sig), error = function(e) NULL) # nocov
-          if (!is.null(ch)) {
-            n_fit <- nrow(int$lavdata@X[[1L]])
-            mu <- ybar +
-              as.numeric(crossprod(ch, stats::rnorm(length(ybar)))) /
-                sqrt(n_fit)
+          shift <- draw_marginalised_mean_shift(
+            implied$cov[[1L]],
+            int$lavsamplestats@x.idx[[1L]],
+            nrow(int$lavdata@X[[1L]])
+          )
+          if (!is.null(shift)) {
+            mu <- ybar + shift
           }
         }
         for (v in intersect(names(mu), colnames(dat))) {
@@ -181,6 +232,10 @@ setMethod(
             dat[[v]] <- dat[[v]] + mu[[v]]
           }
         }
+      }
+
+      if (length(sim_ml_args$cluster_idx) > 0L) {
+        dat$cluster <- relabel_clusters(dat, int$lavdata)
       }
 
       collected <- collected + 1L
@@ -214,3 +269,24 @@ setMethod(
     results
   }
 )
+
+# lavaan numbers simulated clusters 1, ..., J within each group. A replicate
+# that keeps the design of the data gets the data's cluster labels back.
+relabel_clusters <- function(dat, lavdata) {
+  out <- dat$cluster
+  for (g in seq_len(lavdata@ngroups)) {
+    rows <- if (lavdata@ngroups > 1L) dat$group == g else TRUE
+    out[rows] <- lavdata@Lp[[g]]$cluster.id[[2L]][dat$cluster[rows]]
+  }
+  out
+}
+
+# Some lavaan versions warn on every multilevel call that options INLAvaan
+# never sets (mass, skewness and others) are ignored.
+muffle_ml_sim_warning <- function(expr) {
+  withCallingHandlers(expr, warning = function(w) {
+    if (grepl("not supported for multilevel data", conditionMessage(w))) {
+      invokeRestart("muffleWarning")
+    }
+  })
+}

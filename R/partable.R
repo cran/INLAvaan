@@ -13,6 +13,10 @@ partable_classify_sem_matrix <- function(
     return("lambda")
   }
 
+  if (op == "<~") {
+    return("wmat")
+  }
+
   if (op == "~~") {
     if (lhs_is_ov & rhs_is_ov) {
       if (lhs == rhs) {
@@ -87,6 +91,9 @@ partable_prior_from_row <- function(matrix, lhs, rhs, op, dp) {
   if (matrix == "beta") {
     return(dp[["beta"]])
   }
+  if (matrix == "wmat") {
+    return(dp[["wmat"]])
+  }
 
   if (grepl("theta", matrix)) {
     return(if (is_var) dp[["theta"]] else dp[["rho"]])
@@ -138,6 +145,22 @@ partable_transform_funcs <- function(matrix) {
   ))
 }
 
+# Level of each row of a two-level parameter table as an index (1, 2), with 0
+# for rows outside the levels such as := rows. lavaan keeps the level as the
+# syntax writes it, a number ("level: 1") or a name ("level: within").
+partable_level_index <- function(pt) {
+  lvl <- pt$level
+  in_level <- if (is.character(lvl)) nzchar(lvl) else lvl > 0L
+  in_level <- in_level & !pt$op %in% c("==", "<", ">", ":=")
+  match(lvl, unique(lvl[in_level]), nomatch = 0L)
+}
+
+# Level names of a two-level parameter table, in level order
+partable_level_labels <- function(pt) {
+  idx <- partable_level_index(pt)
+  pt$level[match(seq_len(max(idx)), idx)]
+}
+
 inlavaanify_partable <- function(
   pt,
   dp = priors_for(),
@@ -146,8 +169,11 @@ inlavaanify_partable <- function(
 ) {
   nlevels <- lavdata@nlevels
   is_multilvl <- nlevels > 1
+  if (is_multilvl && lavdata@ngroups > 1) {
+    cli_abort("Multigroup two-level models are not supported.")
+  }
   if (is_multilvl) {
-    pt$group <- pt$level
+    pt$group <- partable_level_index(pt)
   }
   ngroups <- max(pt$group)
   std_ov <- lavoptions$std.ov
@@ -172,6 +198,12 @@ inlavaanify_partable <- function(
   }
   pt$mat <- unlist(pt$mat)
 
+  # lavaan scales a composite by its marker weight even under std.lv, so a
+  # covariance with a composite stays a covariance.
+  comp <- unique(pt$lhs[pt$op == "<~"])
+  is_comp_cor <- pt$mat %in% "psi_cor" & (pt$lhs %in% comp | pt$rhs %in% comp)
+  pt$mat[is_comp_cor] <- "psi_cov"
+
   # Add priors
   # Note: Possible to add own non-standard priors, but the evaluation of
   # prior_logdens() will return an error.
@@ -189,6 +221,25 @@ inlavaanify_partable <- function(
   if (!is.null(user_prior)) {
     where_user_prior <- user_prior != ""
     pt$prior[where_user_prior] <- user_prior[where_user_prior]
+
+    # Parameters held equal use the prior of their first row, so a prior written
+    # on another row of the class moves there.
+    shared <- unique(pt$free[pt$free > 0L & duplicated(pt$free)])
+    for (f in shared) {
+      rows <- which(pt$free == f)
+      priors <- unique(user_prior[rows][user_prior[rows] != ""])
+      if (length(priors) > 1L) {
+        cli_abort(c(
+          "Parameters held equal have different priors.",
+          "x" = "{.code {partable_row_name(pt, rows)}}: {.code {priors}}.",
+          "i" = "Give a prior on one of them only."
+        ))
+      }
+      if (length(priors) == 1L) {
+        pt$prior[rows] <- NA_character_
+        pt$prior[rows[1L]] <- priors
+      }
+    }
   }
 
   # Add transformations to unrestricted parameter space
@@ -199,25 +250,51 @@ inlavaanify_partable <- function(
   pt$ginv_prime <- lapply(tmp, `[[`, "ginv_prime")
   pt$ginv_prime2 <- lapply(tmp, `[[`, "ginv_prime2")
 
-  # Compute starting values in unrestricted space
+  # Compute starting values in unrestricted space. A covariance is held as a
+  # correlation there, so its start is lavaan's start covariance over the start
+  # standard deviations.
+  start <- pt$start
+  grp <- if ("level" %in% names(pt)) partable_level_index(pt) else pt$group
+  for (j in which(grepl("cov", pt$mat))) {
+    var_start <- vapply(
+      c(pt$lhs[j], pt$rhs[j]),
+      function(v) {
+        pt$start[pt$lhs == v & pt$op == "~~" & pt$rhs == v & grp == grp[j]][1L]
+      },
+      numeric(1)
+    )
+    rho <- start[j] / sqrt(prod(var_start))
+    start[j] <- if (is.finite(rho)) max(min(rho, 0.99), -0.99) else 0
+  }
   pt$parstart <- mapply(
     function(fun, val) fun(val),
     pt$g,
-    pt$start,
+    start,
     USE.NAMES = FALSE
   )
 
-  # Add names
-  pt$names <- mapply(paste0, pt$lhs, pt$op, pt$rhs)
+  # Names as coef() gives them: the label if any, else lhs op rhs with a group
+  # (".g2") or level (".l2", or ".lbetween" for a named level) suffix after the
+  # first. pt$group holds the level index in a two-level model, and := rows sit
+  # in group 0.
+  pt$names <- paste0(pt$lhs, pt$op, pt$rhs)
+  later <- pt$group > 1
+  suffix <- if (is_multilvl) {
+    paste0(".l", pt$level)
+  } else {
+    paste0(".g", pt$group)
+  }
+  pt$names[later] <- paste0(pt$names[later], suffix[later])
   where_label <- pt$label != ""
   pt$names[where_label] <- pt$label[where_label]
-  if (ngroups > 1) {
-    prefix <- ifelse(is_multilvl, ".l", ".g")
-    pt$names <- paste0(pt$names, prefix, pt$group)
-    pt$names <- gsub(".g1|.l1", "", pt$names)
+
+  is_def <- pt$op == ":="
+  clash <- intersect(pt$lhs[is_def], pt$label[!is_def])
+  if (length(clash) > 0) {
+    cli_abort(
+      "Defined parameter{?s} {.code {clash}} reuse{?s/} a parameter label."
+    )
   }
-  # Remove .l0 from names of defined params
-  pt$names[pt$op == ":="] <- gsub(".l0", "", pt$names[pt$op == ":="])
 
   # Remove pt$group if multilevel (interacts with lav_partable_labels())
   if (is_multilvl) {
@@ -225,5 +302,9 @@ inlavaanify_partable <- function(
   }
 
   # FIXME: Perhaps add a 'inlavaan_partable' class to this object
-  as.list(pt)
+  pt <- as.list(pt)
+  if (any(pt$op == "<~")) {
+    attr(pt, "composites") <- composite_blocks(pt)
+  }
+  pt
 }

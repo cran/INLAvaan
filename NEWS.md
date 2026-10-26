@@ -1,3 +1,222 @@
+# INLAvaan 0.3.3
+
+## New features
+
+* INLAvaan now fits two-level models with random slopes, which lavaan specifies
+  with the `rv()` modifier. They work with `compare()`, `loo()`, `waic()`,
+  `logLik()`, `predict()`, `simulate()` and `sampling()`, and `summary()` marks
+  the rows that carry a random slope. `fitted()`, `residuals()` and the
+  standardised estimates use the implied moments averaged over the covariates,
+  and `per_cluster = TRUE` gives those of each cluster. The Bayesian fit indices
+  are scaled against an unrestricted random-coefficient model. The posterior
+  predictive p-value is not available and is dropped from `test`. A random
+  slope on a latent or split covariate uses lavaan's quadrature, which is
+  slower, and `integration.ngh` sets its number of nodes. Such fits have no
+  `simulate()`, casewise values, `predict(type = "yhat")`, `per_cluster = TRUE`
+  or Bayesian fit indices. Composites cannot be combined with random slopes yet.
+  See the multilevel article.
+
+* INLAvaan now fits composites, which lavaan specifies with the `<~` operator,
+  with continuous data, in one or more groups or at either level of a two-level
+  model. They work with the fit measures, `loo()`, `compare()`, `predict()` and
+  `sampling()`, and `summary()` gives posterior summaries for the variance and
+  intercept of each composite. Free weights have the new default prior
+  `wmat = "normal(0,10)"` in `priors_for()`. Unlike lavaan, INLAvaan estimates
+  the (co)variances of the indicators by default (`composites.cov = "free"`);
+  `composites.cov = "fixed"` fixes them at their sample values. See the new
+  article on composites.
+
+* Composite models that INLAvaan cannot fit yet stop with an error: ordinal
+  data, and `composites.cov = "fixed"` in two-level models. So do composite
+  specifications that cannot be estimated as written, such as a free latent
+  mean that only composites measure (as in `agrowth()` on composites).
+
+## Bug fixes
+
+* The posterior predictive p-value of two-level models was often close to 0
+  for models that fit. It now follows blavaan's two-level PPP: each posterior
+  draw generates replicate data, which are scored against the saturated model.
+  The new arguments `ppp_method` and `ppp_nsamp` set how the data are scored
+  (by default one Fisher-scoring step towards the saturated fit) and how many
+  draws are used (250). The two-level PPP is experimental.
+
+* `simulate()` on a two-level fit now keeps the clusters of the data, with
+  their labels and sizes, and no longer warns on every data set.
+
+* `BCFI` was `-Inf` or `NaN` for posterior draws whose independence model
+  fits within its degrees of freedom. Such draws now follow lavaan's CFI
+  convention.
+
+* `standardisedsolution()` ignored its `nsamp` argument and summarised as many
+  posterior draws as the fit itself had used.
+
+* Multigroup models with `missing = "ml"` gave wrong posteriors.
+
+* `loo()` and `waic()` gave wrong values for complete-data two-level models in
+  which the two levels list the variables in different orders, for example
+  when a regression appears at one level only.
+
+* `compare()` failed when a model was given as a long call.
+
+* `sampling(prior = TRUE)` with `type = "observed"` or `type = "all"` rejected
+  every draw in models with an observed outcome or covariate.
+
+* The marginal log-likelihood was too low by about half the number of free
+  parameters when `vb_correction = TRUE` (the default). As a result, Bayes
+  factors from `compare()` favoured models with fewer parameters.
+
+* A defined parameter (`:=`) can now use other defined parameters, in any
+  order, as in lavaan. Previously the fit failed with an "object not found"
+  error.
+
+* Defined parameters that are constant, or that cannot be computed for some
+  posterior draws (such as `log(b)` when `b` can be negative), no longer stop
+  the fit. Their summaries use the draws where they can be computed, and a
+  single warning gives the share left out, in place of R's repeated "NaNs
+  produced" warnings.
+
+* `summary()` showed the wrong SD, credible interval and prior for defined
+  parameters, and for some rows after them, when the model had equality
+  constraints (shared labels or `group.equal`).
+
+* Equality constraints written as `a == b` or `a == <number>` are now
+  honoured. Previously they were ignored, along with shared labels and
+  `group.equal` in the same model. Constraints INLAvaan cannot fit (such as
+  `a == 2*b`, `a > 0`, `effect.coding`, or a loading held equal to a variance)
+  now give an error.
+
+* Covariances held equal (by shared labels or `group.equal`) now fit
+  correctly. Previously their posterior was biased, or the fit failed.
+
+* `sampling()` and `simulate()` now work for models with equality
+  constraints, and `simulate()` for multigroup models.
+
+* Parameter names now match `coef()`. Previously `plot(fit, params = )` could
+  not find multigroup `:=` parameters, and labels such as `lag1` were mangled.
+  A `:=` parameter that reuses a parameter label, and multigroup two-level
+  models, now give an error.
+
+* Data with ordered-factor columns are now fitted as ordinal data, as with
+  `ordered =`. Previously the fit failed. `ordered =` naming variables outside
+  the model no longer widens the posterior, and a name that matches no model
+  variable gives an error.
+
+* `predict(newdata = )` for ordinal models now codes the categories as in the
+  fit. Previously factor columns gave an error and 0/1 codes gave wrong
+  factor scores.
+
+* Chained modifiers in the model syntax are now all kept. Previously only one
+  survived, so `prior("normal(0,1)")*a*x2` lost its prior, `0.5*a*x2` was
+  left free and `NA*a*x1` stayed fixed.
+
+* A `prior()` on any of several parameters held equal is now used. Previously
+  only a prior on the first of them counted.
+
+* Models where only one variance enters a covariance (for example, with the
+  other variance fixed) no longer fail.
+
+* `predict()` now works for models with observed covariates or observed
+  outcomes, including with `conditional.x = TRUE`. Factor scores and fitted
+  values for models with latent regressions now match lavaan.
+
+* Two-level models with named levels (`level: within` / `level: between`) now
+  fit, and their parameter names follow `coef()`.
+
+* `vcov()` now matches `coef()` in length, order and names for models with
+  equality constraints, and `lavInspect(fit, "vcov")` works on such fits.
+
+* `predict()` no longer fails when a variance is zero, for example a residual
+  variance fixed to zero, or a latent variable fully determined by such an
+  indicator.
+
+* `loo()` and `waic()` no longer fail on two-level models fitted with
+  `missing = "ML"` that have between-level variables, such as cluster-level
+  covariates.
+
+* `loo()` and `waic()` now score two-level `fixed.x = TRUE` models correctly
+  when they mix covariates at both levels with within-only ones.
+
+* `fit_skew_normal_samp()`, and with it the summaries of covariances and
+  defined parameters (`:=`), missed the skew of draws with a small SD (below
+  about 0.2). Posterior modes are also more accurate for parameters on a small
+  scale.
+
+* `loo()` and `waic()` on FIML fits with `fixed.x` covariates now score the
+  outcomes given the covariates, as for complete data. Previously two-level
+  FIML scores included the covariates' density, so they could not be compared
+  with listwise fits or across covariate sets.
+
+* `loo()` and `waic()` no longer fail on FIML fits with singleton or two-row
+  clusters, or with clusters or rows that have no observed data. Units with
+  nothing to predict are left out, with a message. In two-level
+  `type = "loso"`, rows with no within-level data no longer each count the
+  whole cluster.
+
+* `predict(type = "ypred")` for two-level models now adds residual noise to
+  observed outcomes, not only to factor indicators.
+
+* `predict()` for two-level models now draws latent variables and missing
+  values from their posterior given all of the cluster's data, as for
+  single-level models. Previously it returned factor scores without their
+  uncertainty, and imputed each row without the rest of its cluster.
+
+* With `fixed.x = TRUE` (the default), the marginal likelihood and DIC now
+  condition on the covariates. Previously a covariate with no effect changed
+  Bayes factors from `compare()`, by a lot in two-level models where it varies
+  at both levels.
+
+* `fitMeasures()` overstated the chi-square of models without a mean
+  structure, and with it BRMSEA and the other Bayesian fit indices.
+
+* The PPP no longer fails for `conditional.x = TRUE` fits.
+
+* The PPP no longer overstates the fit of models with fixed covariates
+  (`fixed.x = TRUE`, the default). Its replicates varied the covariates, which
+  the model does not predict.
+
+* `simulate()` and `predict(type = "ymis")` now work for `conditional.x = TRUE`
+  fits. Previously `simulate()` rejected every draw and imputation failed.
+
+* `sampling()` for `conditional.x = TRUE` fits now draws the covariates too,
+  as for other fits. Previously it left out their effects.
+
+* Models with a free covariance above 1 at its starting value, such as
+  covariances between covariates under `fixed.x = FALSE`, no longer fail.
+
+## Minor improvements and fixes
+
+* Models without a mean structure fit much faster. The gradient of their
+  marginalised log-likelihood is now lavaan's ML gradient for `n - 1`
+  observations and the unbiased sample covariance, where INLAvaan used to
+  rebuild lavaan's Jacobian of the implied covariance at every call. The
+  posterior is unchanged, and a 256-parameter factor model fits about ten
+  times faster. Such a model with sampling weights now gives an error when a
+  group's weights sum to 1 or less, where the marginalised likelihood is
+  unbounded.
+
+* `likelihood = "wishart"`, also the default under `mimic = "EQS"` or
+  `"LISREL"`, is now ignored with a message. lavaan then divides the sample
+  covariance by `n - 1`, but INLAvaan's likelihood assumes the divisor `n`, so
+  such fits overstated the sample covariance by `n / (n - 1)`. Without a mean
+  structure, integrating out the saturated means already gives the Wishart
+  likelihood.
+
+* Parameter types missing from `dp` take their default priors, and a `dp`
+  without names gives an error.
+
+* A Hessian that is not positive definite at the posterior mode gives a clear
+  error.
+
+* `plot()` explains that fixed and derived parameters have no posterior
+  density.
+
+* `compare()` warns when fits differ in `vb_correction`.
+
+* `predict(newdata = )` warns about ordinal values not seen when fitting.
+
+* `fitted()`, `residuals()`, the standardised estimates and the R-square of
+  random-slope fits also work with lavaan versions after 0.7-3.
+
 # INLAvaan 0.3.2
 
 ## Deprecations

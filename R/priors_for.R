@@ -14,8 +14,11 @@
 #'   \item \code{alpha = "normal(0,10)"}: Latent variable intercepts
 #'   \item \code{lambda = "normal(0,10)"}: Factor loadings
 #'   \item \code{beta = "normal(0,10)"}: Regression coefficients
-#'   \item \code{theta = "gamma(1,.5)[sd]"}: Residual precisions
-#'   \item \code{psi = "gamma(1,.5)[sd]"}: Latent variable precisions
+#'   \item \code{wmat = "normal(0,10)"}: Composite weights (\code{<~})
+#'   \item \code{theta = "gamma(1,.5)[sd]"}: Residual variances (prior on the
+#'     standard deviation)
+#'   \item \code{psi = "gamma(1,.5)[sd]"}: Latent variable variances (prior on
+#'     the standard deviation)
 #'   \item \code{rho = "beta(1,1)"}: Correlations (both latent and observed)
 #'   \item \code{tau = "normal(0,1.5)"}: Thresholds for ordinal variables
 #' }
@@ -73,8 +76,9 @@ priors_for <- function(...) {
     alpha  = "normal(0,10)",     # Latent intercepts
     lambda = "normal(0,10)",     # Loadings
     beta   = "normal(0,10)",     # Regressions
-    theta  = "gamma(1,.5)[sd]",  # Residual precisions
-    psi    = "gamma(1,.5)[sd]",  # Latent precisions
+    wmat   = "normal(0,10)",     # Composite weights
+    theta  = "gamma(1,.5)[sd]",  # Residual SDs
+    psi    = "gamma(1,.5)[sd]",  # Latent SDs
     rho    = "beta(1,1)",        # Correlations
     tau    = "normal(0,1.5)"     # Thresholds
   )

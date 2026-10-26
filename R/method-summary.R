@@ -98,8 +98,15 @@ summary_inlavaan <- function(
   # else if (marg_method == "sampling")
   #   marg_method <- "Sampling"
 
-  PE <- lavaan::parameterEstimates(
-    object,
+  # The R-square of a random-slope fit is replaced below
+  pe_object <- object
+  if (has_random_slopes(object@Model)) {
+    pe_object <- rs_without_flags(object)
+  }
+  # lavaan also standardises the := rows for the R-square, where they may be
+  # undefined.
+  PE <- muffle_nan_warnings(lavaan::parameterEstimates(
+    pe_object,
     se = FALSE, # create our own
     zstat = FALSE,
     ci = TRUE,
@@ -111,10 +118,28 @@ summary_inlavaan <- function(
     remove_def = FALSE,
     header = TRUE,
     output = "text"
-  )
+  ))
   if (is.null(PE$block)) {
     PE$block <- 1
     PE$block[PE$op == ":="] <- 0
+  }
+  # lavaan's R-square of a random-slope model leaves the slope out of the
+  # outcome's variance, so take it from the averaged implied variances
+  r2_idx <- which(PE$op == "r2")
+  if (length(r2_idx) > 0L && has_random_slopes(object@Model)) {
+    r2 <- tryCatch(
+      rs_rsquare(object, rs_spec(get_inlavaan_internal(object))$rs$info),
+      inlavaan_rs_within_only = function(cond) warn_rs_left_out("R-square")
+    )
+    if (is.null(r2)) {
+      PE <- PE[-r2_idx, , drop = FALSE]
+    } else {
+      r2 <- r2[r2$resvar, ]
+      PE$est[r2_idx] <- r2$r2[match(
+        paste(PE$lhs[r2_idx], PE$block[r2_idx]),
+        paste(r2$lhs, r2$block)
+      )]
+    }
   }
 
   # # If PML, remove intercepts when not estimated
@@ -124,11 +149,35 @@ summary_inlavaan <- function(
 
   # Now need to put information into PE from pt and summary
   pt <- object@ParTable
+  summ <- object@external$inlavaan_internal$summary
+
+  # Random slopes: lavaan drops the `s1 =~ s1` marker row from the
+  # estimates and leaves the level-1 carrier at zero with nothing to say
+  # why. Labelling the carrier with the slope name renders it as
+  # `x1 (s1)`, and a legend under the table says where to read it.
+  rs_labels <- character(0)
+  if (!is.null(pt$rv) && any(nzchar(pt$rv))) {
+    rvidx <- which(nzchar(pt$rv) & pt$op == "~")
+    pervidx <- match(
+      paste0(pt$lhs[rvidx], pt$op[rvidx], pt$rhs[rvidx], pt$block[rvidx]),
+      paste0(PE$lhs, PE$op, PE$rhs, PE$block)
+    )
+    keep <- !is.na(pervidx)
+    if (any(keep)) {
+      if (is.null(PE$label)) {
+        PE$label <- ""
+      }
+      PE$label[pervidx[keep]] <- pt$rv[rvidx][keep]
+      rs_labels <- unique(pt$rv[rvidx][keep])
+    }
+  }
+
   ptfreeidx <- which(pt$free > 0)
   ptdefidx <- which(pt$op == ":=")
   ptdeltaidx <- which(pt$op == "~*~")
-  ptidx <- c(ptfreeidx, ptdefidx, ptdeltaidx)
-  summ <- object@external$inlavaan_internal$summary
+  ptcompidx <- composite_derived_rows(pt)
+  ptcompidx <- ptcompidx[pt$names[ptcompidx] %in% rownames(summ)]
+  ptidx <- c(ptfreeidx, ptdefidx, ptdeltaidx, ptcompidx)
   peidx <- match(
     paste0(
       pt$lhs[ptidx],
@@ -138,12 +187,18 @@ summary_inlavaan <- function(
     ),
     paste0(PE$lhs, PE$op, PE$rhs, PE$block)
   )
-  summidx <- match(pt$free[pt$free > 0], seq_len(nrow(summ)))
-  if (length(ptdefidx) > 0 | length(ptdeltaidx) > 0) {
-    # FIXME: I think this should be ok, since pt$free always in increasing
-    # order
-    summidx <- seq_len(nrow(summ))
-  }
+  # Free rows by their (packed) free index, so rows that share a label share a
+  # summary row. Defined and delta rows by name.
+  summidx <- c(
+    pt$free[ptfreeidx],
+    match(pt$names[c(ptdefidx, ptdeltaidx, ptcompidx)], rownames(summ))
+  )
+  # The parameter table keeps a composite's variance and intercept at the
+  # posterior means of the weights, but the summary reports their posterior
+  # means.
+  compidx <- tail(seq_along(ptidx), length(ptcompidx))
+  compidx <- compidx[!is.na(peidx[compidx])]
+  PE$est[peidx[compidx]] <- summ$Mean[summidx[compidx]]
 
   char.format <- paste("%", max(8, nd + 5), "s", sep = "")
   PE$SD <- ""
@@ -175,7 +230,15 @@ summary_inlavaan <- function(
 
   # Standardised solution?
   if (isTRUE(standardised)) {
-    stdlv <- standardisedsolution(object, type = "std.lv", ...)
+    stdlv <- tryCatch(
+      standardisedsolution(object, type = "std.lv", ...),
+      inlavaan_rs_within_only = function(cond) {
+        warn_rs_left_out("standardised estimates")
+      }
+    )
+    standardised <- !is.null(stdlv)
+  }
+  if (isTRUE(standardised)) {
     stdall <- standardisedsolution(object, type = "std.all", ...)
     stdidx <- match_partable_rows(PE, stdlv)
     PE$std.lv <- format_pe_col(stdlv$est.std[stdidx], nd)
@@ -274,9 +337,37 @@ summary_inlavaan <- function(
     garb[(idxpehead + 2):length(garb)]
   )
 
+  if (length(rs_labels) > 0) {
+    rs_names <- paste(rs_labels, collapse = ", ")
+    newgarb <- c(
+      newgarb,
+      "",
+      paste0(
+        "  (",
+        rs_names,
+        ")  random slope",
+        if (length(rs_labels) > 1L) "s" else "",
+        ": mean, variance and regressions appear as ",
+        rs_names,
+        " at Level 2"
+      )
+    )
+  }
+
   # Print
   cat(paste0(newgarb, collapse = "\n"))
   cat("\n")
+
+  # Note := rows summarised over part of the posterior (see defined_draws())
+  undef <- object@external$inlavaan_internal$def_undefined
+  undef <- undef[undef > 0]
+  if (length(undef) > 0) {
+    cat(
+      "\nDefined parameters summarised over the draws where they are defined:\n",
+      paste0("  ", names(undef), ": undefined in ", format_share(undef), "\n"),
+      sep = ""
+    )
+  }
 }
 
 #' @param header Logical; if TRUE, print model fit information header.

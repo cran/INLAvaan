@@ -62,6 +62,15 @@ test_that("compare() returns compare.inlavaan_internal data.frame", {
   expect_equal(cmp$logBF[1], 0)
 })
 
+test_that("compare() names a model given as a long call on one line", {
+  cmp <- compare(
+    fit1,
+    list(a_long_name_that_pushes_the_call_past_the_cutoff = fit2, b = 1)[[1]]
+  )
+  expect_equal(nrow(cmp), 2)
+  expect_true(any(grepl("a_long_name", cmp$Model)))
+})
+
 test_that("compare() print runs without error", {
   cmp <- compare(fit1, fit2)
   expect_output(print(cmp), "Bayesian Model Comparison")
@@ -123,6 +132,22 @@ test_that("compare() warns when mean-structure treatments differ", {
     "Interpret only the ELPD columns"
   )
   expect_true(all(is.finite(cmp$ELPD)))
+})
+
+test_that("compare() warns when fits differ in the VB correction", {
+  fit2_novb <- acfa(
+    mod_full,
+    dat,
+    vb_correction = FALSE,
+    marginal_method = "marggaus",
+    verbose = FALSE,
+    nsamp = 3,
+    test = "none"
+  )
+  expect_warning(compare(fit1, fit2_novb), "VB correction")
+  # Fits that agree on the setting compare without it, with or without VB
+  expect_no_warning(compare(fit1, fit2))
+  expect_no_warning(compare(fit1_ms, fit2_ms))
 })
 
 test_that("compare() accepts more than two models via ...", {
@@ -206,6 +231,7 @@ test_that("compare(loo = TRUE) aborts for models on different data", {
       mod_null,
       dat[1:20, ],
       meanstructure = TRUE,
+      vb_correction = FALSE, # as fit1_ms
       verbose = FALSE,
       nsamp = 3,
       test = "none"
@@ -221,6 +247,7 @@ test_that("compare(loo = TRUE) aborts when the variable sets differ", {
     mod_speed,
     dat,
     meanstructure = TRUE,
+    vb_correction = FALSE, # as fit1_ms
     verbose = FALSE,
     nsamp = 3,
     test = "none"
@@ -292,4 +319,381 @@ test_that("compare() scales incremental indices against the independence model",
   # The first model is no longer its own baseline, so it does not sit at 0
   expect_gt(cmp$BCFI[cmp$Model == "fit_a"], 0.3)
   expect_true(all(cmp$BCFI <= 1))
+})
+
+## ----- Composites ------------------------------------------------------------
+
+# lavaan fixes the (co)variances of composite indicators at their sample values,
+# and the marginal likelihood and DIC condition on them
+mod_comp <- "
+  C <~ x1 + x2 + x3
+  x4 ~ C
+  x5 ~ C
+  x4 ~~ x5
+"
+fit_args_comp <- list(
+  composites.cov = "fixed",
+  verbose = FALSE,
+  nsamp = 3,
+  test = "none",
+  vb_correction = FALSE,
+  marginal_method = "marggaus"
+)
+fit_comp <- do.call(asem, c(list(mod_comp, dat), fit_args_comp))
+
+test_that("compare() warns when fits do not fix the same composite blocks", {
+  # The same composite on the same data: comparable
+  mod_comp0 <- "
+    C <~ x1 + x2 + x3
+    x4 ~ C
+    x5 ~ C
+    x4 ~~ 0*x5
+  "
+  fit_comp0 <- do.call(asem, c(list(mod_comp0, dat), fit_args_comp))
+  expect_no_warning(compare(fit_comp, fit_comp0))
+
+  # The same model with the indicator moments estimated is not
+  mod_phantom <- "
+    C =~ 0
+    C ~ 1*x1 + x2 + x3
+    C ~~ 0*C
+    x4 ~ C
+    x5 ~ C
+    x4 ~~ x5
+  "
+  fit_phantom <- do.call(
+    asem,
+    c(list(mod_phantom, dat, fixed.x = FALSE), fit_args_comp)
+  )
+  expect_warning(compare(fit_comp, fit_phantom), "same composites")
+  expect_warning(
+    cmp <- compare(fit_comp, fit_phantom, loo = TRUE),
+    "Interpret only the ELPD columns"
+  )
+  expect_true(all(is.finite(cmp$ELPD)))
+})
+
+test_that("compare(loo = TRUE) says why a composite fit is scored jointly", {
+  fit_reg <- do.call(
+    asem,
+    c(list("x4 ~ x1 + x2 + x3\n x5 ~ x1 + x2 + x3", dat), fit_args_comp)
+  )
+  expect_error(
+    suppressWarnings(compare(fit_comp, fit_reg, loo = TRUE)),
+    "not fixed covariates"
+  )
+  # Without composites the usual hint stands
+  fit_reg_joint <- do.call(
+    asem,
+    c(
+      list("x4 ~ x1 + x2 + x3\n x5 ~ x1 + x2 + x3", dat, fixed.x = FALSE),
+      fit_args_comp
+    )
+  )
+  expect_error(
+    compare(fit_reg_joint, fit_reg, loo = TRUE),
+    "same `fixed.x` setting"
+  )
+})
+
+## ----- Random slopes ---------------------------------------------------------
+# A random-slope likelihood is conditional on the exogenous covariates, so the
+# table only means anything across fits that condition on the same ones. The
+# fixtures are the 24-cluster subset of lavaan::Demo.twolevel used throughout
+# the random-slope tests, and `test = "dic"` is what fills the DIC/pD columns.
+d_rs <- lavaan::Demo.twolevel[lavaan::Demo.twolevel$cluster %in% 1:24, ]
+mod_rs <- "
+  level: 1
+    fw =~ y1 + y2 + y3
+    fw ~ rv('s1')*x1
+  level: 2
+    fb =~ y1 + y2 + y3
+    fb ~ w1
+    s1 ~ w1
+"
+# The nested no-random-slope fit: one constraint away from mod_rs, and it
+# keeps the conditioning set whole
+mod_rs0 <- paste0(mod_rs, "    s1 ~~ 0*s1\n")
+# The exact fixed-slope comparator: with no level-2 regression on the slope
+# either, s1 is a single constant shared by every cluster
+mod_rs0e <- "
+  level: 1
+    fw =~ y1 + y2 + y3
+    fw ~ rv('s1')*x1
+  level: 2
+    fb =~ y1 + y2 + y3
+    fb ~ w1
+    s1 ~~ 0*s1
+"
+mod_fx <- "
+  level: 1
+    fw =~ y1 + y2 + y3
+    fw ~ x1
+  level: 2
+    fb =~ y1 + y2 + y3
+    fb ~ w1
+"
+fit_twolevel <- function(mod, ...) {
+  asem(
+    mod,
+    d_rs,
+    cluster = "cluster",
+    verbose = FALSE,
+    nsamp = 3,
+    test = "dic",
+    marginal_correction = "none",
+    vb_correction = FALSE,
+    ...
+  )
+}
+fit_rs <- fit_twolevel(mod_rs)
+fit_rs0 <- fit_twolevel(mod_rs0)
+fit_fx <- fit_twolevel(mod_fx)
+
+test_that("random-slope fits are compared on marginal likelihood and DIC", {
+  cmp <- compare(fit_rs, fit_rs0, fit_fx)
+  expect_named(cmp, c("Model", "npar", "Marg.Loglik", "logBF", "DIC", "pD"))
+  expect_false(any(c("AIC", "BIC") %in% names(cmp)))
+  # 19 parameters with the random slope, one fewer once its variance is fixed
+  # at zero, and one fewer again without the level-2 regression on it
+  expect_equal(
+    cmp$npar[match(c("fit_rs", "fit_rs0", "fit_fx"), cmp$Model)],
+    c(19L, 18L, 17L)
+  )
+  expect_true(all(is.finite(cmp$Marg.Loglik)))
+  expect_true(all(is.finite(cmp$DIC)))
+})
+
+test_that("a zero-variance slope is on the same scale as a fixed slope", {
+  skip_on_cran()
+  # Fixing the slope variance at zero *and* dropping its level-2 regression
+  # leaves exactly the fixed-slope model, so the two marginal likelihoods are
+  # one number computed two ways -- the regression test that the random-slope
+  # kernel and the ordinary two-level one live on a single scale
+  fit_rs0e <- fit_twolevel(mod_rs0e)
+  cmp <- compare(fit_rs0e, fit_fx)
+  expect_equal(cmp$npar, c(17L, 17L))
+  expect_equal(diff(cmp$Marg.Loglik), 0, tolerance = 1e-3)
+})
+
+test_that("comparing a random-slope fit with a fixed.x = FALSE fit aborts", {
+  fit_fx_free <- fit_twolevel(mod_fx, fixed.x = FALSE)
+  expect_error(
+    compare(fit_rs, fit_fx_free),
+    class = "inlavaan_rs_compare_fixedx"
+  )
+})
+
+test_that("random-slope fits may differ in their covariates", {
+  skip_on_cran()
+  # Without w1 the outcomes cannot depend on it, so this fit's density of the
+  # outcomes given x1 is also its density given x1 and w1. It is the same
+  # model as one that keeps w1 with its effects fixed at zero.
+  mod_nw <- "
+    level: 1
+      fw =~ y1 + y2 + y3
+      fw ~ rv('s1')*x1
+    level: 2
+      fb =~ y1 + y2 + y3
+  "
+  mod_w0 <- paste0(mod_nw, "    fb ~ 0*w1\n    s1 ~ 0*w1\n")
+  fit_nw <- fit_twolevel(mod_nw)
+  fit_w0 <- fit_twolevel(mod_w0)
+  cmp <- compare(fit_nw, fit_w0)
+  expect_equal(diff(cmp$Marg.Loglik), 0, tolerance = 1e-6)
+  cmp_loo <- compare(fit_nw, fit_w0, loo = TRUE)
+  expect_equal(diff(cmp_loo$ELPD), 0, tolerance = 1e-3)
+
+  # Against fits where w1 has effects, random slope or fixed
+  expect_no_error(cmp_w <- compare(fit_rs, fit_nw, fit_fx))
+  expect_true(all(is.finite(cmp_w$Marg.Loglik)))
+})
+
+test_that("compare(loo = TRUE) works across random-slope fits", {
+  skip_on_cran()
+  cmp <- compare(fit_rs, fit_rs0, loo = TRUE)
+  expect_true(all(
+    c("ELPD", "SE", "p_loo", "elpd_diff", "se_diff") %in% names(cmp)
+  ))
+  expect_true(all(is.finite(cmp$ELPD)))
+  expect_equal(attr(cmp, "loo_n_models"), 2L)
+  expect_equal(sum(cmp$elpd_diff == 0), 1L)
+})
+
+test_that("a between-level factor is compared on the kernel's own sets", {
+  skip_on_cran()
+  # `fz =~ w1 + w2` makes w1 and w2 part of what the kernel models, not
+  # part of what it conditions on, so this fit is on the same scale as the
+  # plain fixed-slope fit that models them the same way
+  mod_zb <- "
+    level: 1
+      fw =~ y1 + y2 + y3
+      fw ~ rv('s1')*x1
+    level: 2
+      fb =~ y1 + y2 + y3
+      fz =~ w1 + w2
+      fb ~ fz
+      s1 ~ fz
+  "
+  mod_zb_fx <- "
+    level: 1
+      fw =~ y1 + y2 + y3
+      fw ~ x1
+    level: 2
+      fb =~ y1 + y2 + y3
+      fz =~ w1 + w2
+      fb ~ fz
+  "
+  # Three parameters of these small fits trip the marginal-fit diagnostic,
+  # which has nothing to do with what is being tested here
+  fit_zb <- suppressWarnings(fit_twolevel(mod_zb))
+  fit_zb_fx <- suppressWarnings(fit_twolevel(mod_zb_fx))
+
+  spec <- rs_spec(get_inlavaan_internal(fit_zb))
+  expect_equal(spec$cond, "x1")
+  expect_setequal(spec$resp, c("y1", "y2", "y3", "w1", "w2"))
+
+  expect_no_error(cmp <- compare(fit_zb, fit_zb_fx))
+  expect_true(all(is.finite(cmp$Marg.Loglik)))
+
+  # Regressing on w1 and w2 instead conditions on them, so they are no longer
+  # scored and the two fits score different variables
+  mod_exo <- "
+    level: 1
+      fw =~ y1 + y2 + y3
+      fw ~ rv('s1')*x1
+    level: 2
+      fb =~ y1 + y2 + y3
+      fb ~ w1 + w2
+      s1 ~ w1 + w2
+  "
+  fit_exo <- suppressWarnings(fit_twolevel(mod_exo))
+  expect_setequal(
+    rs_spec(get_inlavaan_internal(fit_exo))$cond,
+    c("x1", "w1", "w2")
+  )
+  expect_error(
+    compare(fit_zb, fit_exo),
+    class = "inlavaan_rs_compare_resp"
+  )
+})
+
+test_that("quadrature fits are compared on the covariates they condition on", {
+  skip_on_cran()
+  # The quadrature kernel scores a covariate that lives at both levels with
+  # the outcomes, and the fixed.x shift takes its density out again, so
+  # these fits condition on their covariates like any fixed.x fit
+  set.seed(2)
+  J <- 12
+  n <- 6
+  cl <- rep(seq_len(J), each = n)
+  xw <- stats::rnorm(J * n)
+  x1 <- stats::rnorm(J)[cl] + xw
+  x2 <- stats::rnorm(J)[cl] + stats::rnorm(J * n)
+  u0 <- stats::rnorm(J, 0, sqrt(0.5))
+  u1 <- stats::rnorm(J, 0, 0.5)
+  d_b <- data.frame(
+    y1 = 1 + u0[cl] + (0.5 + u1[cl]) * xw + stats::rnorm(J * n),
+    x1 = x1,
+    x2 = x2,
+    cluster = cl
+  )
+  fit_b <- function(mod) {
+    suppressWarnings(
+      asem(
+        mod,
+        d_b,
+        cluster = "cluster",
+        integration.ngh = 5,
+        verbose = FALSE,
+        nsamp = 3,
+        test = "none",
+        marginal_correction = "none",
+        vb_correction = FALSE
+      )
+    )
+  }
+  fit_b1 <- fit_b(
+    "
+    level: 1
+      y1 ~ rv('s1')*x1
+    level: 2
+      y1 ~ x1
+      y1 ~~ y1
+      s1 ~~ s1
+  "
+  )
+  fit_b2 <- fit_b(
+    "
+    level: 1
+      y1 ~ rv('s1')*x1 + rv('s2')*x2
+    level: 2
+      y1 ~ x1 + x2
+      y1 ~~ y1
+      s1 ~~ s1
+      s2 ~~ s2
+  "
+  )
+
+  spec1 <- rs_spec(get_inlavaan_internal(fit_b1))
+  expect_setequal(spec1$resp, c("y1", "x1"))
+  expect_length(spec1$cond, 0L)
+  sets1 <- rs_scored_sets(get_inlavaan_internal(fit_b1), spec1)
+  expect_equal(sets1$cond, "x1")
+  expect_equal(sets1$resp, "y1")
+
+  # A second covariate is covariate selection, as for any fixed.x fit
+  expect_no_error(cmp_b <- compare(fit_b1, fit_b2))
+  expect_true(all(is.finite(cmp_b$Marg.Loglik)))
+
+  # The fixed-slope model is the comparator, here where a zero slope variance
+  # is not available
+  fit_bfx <- fit_b(
+    "
+    level: 1
+      y1 ~ x1
+    level: 2
+      y1 ~ x1
+      y1 ~~ y1
+  "
+  )
+  expect_no_error(cmp <- compare(fit_b1, fit_bfx))
+  expect_true(all(is.finite(cmp$Marg.Loglik)))
+  cmp_loo <- expect_warning(
+    compare(fit_b1, fit_bfx, loo = TRUE),
+    class = "inlavaan_rs_route_b"
+  )
+  expect_true(all(is.finite(cmp_loo$ELPD)))
+})
+
+test_that("a zero slope variance matches the fixed slope with a split covariate", {
+  skip_on_cran()
+  # x2 varies at both levels and carries no slope. lavaan's kernel scores it
+  # with the outcomes, and the evidence and the LOO both take its density
+  # out (about 423 here), so the comparison with the fixed-slope fit is on
+  # one scale. The two kernels treat x2 slightly differently, by 0.11 at the
+  # same parameter values on this subset, which bounds what remains.
+  mod_split0 <- "
+    level: 1
+      fw =~ y1 + y2 + y3
+      fw ~ rv('s1')*x1 + x2
+    level: 2
+      fb =~ y1 + y2 + y3
+      fb ~ x2 + w1
+      s1 ~~ 0*s1
+  "
+  mod_split_fx <- "
+    level: 1
+      fw =~ y1 + y2 + y3
+      fw ~ x1 + x2
+    level: 2
+      fb =~ y1 + y2 + y3
+      fb ~ x2 + w1
+  "
+  fit_split0 <- suppressWarnings(fit_twolevel(mod_split0))
+  fit_split_fx <- suppressWarnings(fit_twolevel(mod_split_fx))
+  cmp <- compare(fit_split0, fit_split_fx)
+  expect_lt(abs(diff(cmp$Marg.Loglik)), 0.25)
+  cmp_loo <- compare(fit_split0, fit_split_fx, loo = TRUE)
+  expect_lt(abs(diff(cmp_loo$ELPD)), 0.25)
 })
